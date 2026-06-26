@@ -97,20 +97,47 @@ func TestExtractOpenAICodexProbeUpdatesAccepts429WithCodexHeaders(t *testing.T) 
 func TestOpenAICodexProbeModels(t *testing.T) {
 	t.Parallel()
 
-	passive := openAICodexProbeModels(false)
+	passive := openAICodexProbeModels(false, true)
 	if len(passive) != 1 || passive[0] != openaipkg.DefaultTestModel {
-		t.Fatalf("openAICodexProbeModels(false) = %#v, want only %q", passive, openaipkg.DefaultTestModel)
+		t.Fatalf("openAICodexProbeModels(false, true) = %#v, want only %q", passive, openaipkg.DefaultTestModel)
 	}
 
-	active := openAICodexProbeModels(true)
+	activeNonPro := openAICodexProbeModels(true, false)
+	if len(activeNonPro) != 1 || activeNonPro[0] != openaipkg.DefaultTestModel {
+		t.Fatalf("openAICodexProbeModels(true, false) = %#v, want only %q", activeNonPro, openaipkg.DefaultTestModel)
+	}
+
+	active := openAICodexProbeModels(true, true)
 	if len(active) != 2 {
-		t.Fatalf("openAICodexProbeModels(true) = %#v, want 2 models", active)
+		t.Fatalf("openAICodexProbeModels(true, true) = %#v, want 2 models", active)
 	}
 	if active[0] != openaipkg.DefaultTestModel {
 		t.Fatalf("active first model = %q, want %q", active[0], openaipkg.DefaultTestModel)
 	}
 	if active[1] != openAICodexSparkProbeModel {
 		t.Fatalf("active second model = %q, want %q", active[1], openAICodexSparkProbeModel)
+	}
+}
+
+func TestOpenAIPlanEligibleForSparkUsage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		planType string
+		want     bool
+	}{
+		{planType: "pro", want: true},
+		{planType: "prolite", want: true},
+		{planType: " ProLite ", want: true},
+		{planType: "plus", want: false},
+		{planType: "free", want: false},
+		{planType: "", want: false},
+	}
+
+	for _, tt := range tests {
+		if got := openAIPlanEligibleForSparkUsage(tt.planType); got != tt.want {
+			t.Fatalf("openAIPlanEligibleForSparkUsage(%q) = %v, want %v", tt.planType, got, tt.want)
+		}
 	}
 }
 
@@ -185,8 +212,9 @@ func TestAccountUsageService_GetOpenAIUsage_ReturnsSparkSnapshot(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	svc := &AccountUsageService{}
 	account := &Account{
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeOAuth,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"plan_type": "pro"},
 		Extra: map[string]any{
 			"codex_5h_used_percent": 43.0,
 			"codex_5h_reset_at":     now.Add(30 * time.Minute).Format(time.RFC3339),
@@ -212,6 +240,37 @@ func TestAccountUsageService_GetOpenAIUsage_ReturnsSparkSnapshot(t *testing.T) {
 	}
 	if usage.CodexSparkSevenDay == nil || usage.CodexSparkSevenDay.Utilization != 16.0 {
 		t.Fatalf("spark 7d usage = %#v, want utilization 16", usage.CodexSparkSevenDay)
+	}
+}
+
+func TestAccountUsageService_GetOpenAIUsage_HidesSparkSnapshotForNonPro(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	svc := &AccountUsageService{}
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"plan_type": "free"},
+		Extra: map[string]any{
+			"codex_5h_used_percent":       43.0,
+			"codex_5h_reset_at":           now.Add(30 * time.Minute).Format(time.RFC3339),
+			"codex_spark_5h_used_percent": 8.0,
+			"codex_spark_5h_reset_at":     now.Add(5 * time.Hour).Format(time.RFC3339),
+			"codex_spark_7d_used_percent": 41.0,
+			"codex_spark_7d_reset_at":     now.Add(6 * 24 * time.Hour).Format(time.RFC3339),
+		},
+	}
+
+	usage, err := svc.getOpenAIUsage(context.Background(), account, false)
+	if err != nil {
+		t.Fatalf("getOpenAIUsage() error = %v", err)
+	}
+	if usage.FiveHour == nil || usage.FiveHour.Utilization != 43.0 {
+		t.Fatalf("normal 5h usage = %#v, want utilization 43", usage.FiveHour)
+	}
+	if usage.CodexSparkFiveHour != nil || usage.CodexSparkSevenDay != nil {
+		t.Fatalf("non-Pro account must not expose Spark usage: 5h=%#v 7d=%#v", usage.CodexSparkFiveHour, usage.CodexSparkSevenDay)
 	}
 }
 

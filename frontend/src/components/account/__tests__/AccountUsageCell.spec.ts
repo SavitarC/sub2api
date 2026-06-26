@@ -317,6 +317,7 @@ describe('AccountUsageCell', () => {
           id: 2005,
           platform: 'openai',
           type: 'oauth',
+          credentials: { plan_type: 'pro' },
           extra: {}
         })
       },
@@ -363,6 +364,7 @@ describe('AccountUsageCell', () => {
           id: 2006,
           platform: 'openai',
           type: 'oauth',
+          credentials: { plan_type: 'pro' },
           extra: {}
         })
       },
@@ -384,6 +386,160 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).toContain('Spark 5h|8|2099-03-07T17:00:00Z|indigo')
     expect(wrapper.text()).toContain('Spark 7d|41|2099-03-13T21:00:00Z|emerald')
     expect(wrapper.findAll('div').some((node) => node.text() === '-')).toBe(false)
+  })
+
+  it('OpenAI OAuth ProLite 账户展示 Spark 独立限额', async () => {
+    getUsage.mockResolvedValue({
+      five_hour: null,
+      seven_day: null,
+      codex_spark_five_hour: {
+        utilization: 12,
+        resets_at: '2099-03-07T17:00:00Z',
+        remaining_seconds: 18000
+      },
+      codex_spark_seven_day: null
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2008,
+          platform: 'openai',
+          type: 'oauth',
+          credentials: { plan_type: ' ProLite ' },
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}|{{ color }}</div>'
+          },
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenCalledWith(2008)
+    expect(wrapper.text()).toContain('Spark 5h|12|2099-03-07T17:00:00Z|indigo')
+  })
+
+  it('OpenAI OAuth 空状态仍可触发主动用量查询', async () => {
+    getUsage
+      .mockResolvedValueOnce({
+        five_hour: null,
+        seven_day: null,
+        codex_spark_five_hour: null,
+        codex_spark_seven_day: null
+      })
+      .mockResolvedValueOnce({
+        five_hour: null,
+        seven_day: null,
+        codex_spark_five_hour: {
+          utilization: 12,
+          resets_at: '2099-03-07T17:00:00Z',
+          remaining_seconds: 18000
+        },
+        codex_spark_seven_day: null,
+        source: 'active'
+      })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2009,
+          platform: 'openai',
+          type: 'oauth',
+          credentials: { plan_type: 'prolite' },
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}|{{ color }}</div>'
+          },
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: {
+            template: '<div class="quota-reset"><slot name="pre-actions" /></div>'
+          }
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const button = wrapper.find('button')
+    expect(button.exists()).toBe(true)
+
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenNthCalledWith(1, 2009)
+    expect(getUsage).toHaveBeenNthCalledWith(2, 2009, 'active', true)
+    expect(wrapper.text()).toContain('Spark 5h|12|2099-03-07T17:00:00Z|indigo')
+  })
+
+  it('OpenAI OAuth 非 Pro 账户不展示 Spark 独立限额', async () => {
+    getUsage.mockResolvedValue({
+      five_hour: {
+        utilization: 43,
+        resets_at: '2099-03-07T12:00:00Z',
+        remaining_seconds: 3600,
+        window_stats: {
+          requests: 9,
+          tokens: 900,
+          cost: 0.09,
+          standard_cost: 0.09,
+          user_cost: 0.09
+        }
+      },
+      seven_day: null,
+      codex_spark_five_hour: {
+        utilization: 8,
+        resets_at: '2099-03-07T17:00:00Z',
+        remaining_seconds: 18000
+      },
+      codex_spark_seven_day: {
+        utilization: 41,
+        resets_at: '2099-03-13T21:00:00Z',
+        remaining_seconds: 604800
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2007,
+          platform: 'openai',
+          type: 'oauth',
+          credentials: { plan_type: 'free' },
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}|{{ color }}</div>'
+          },
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenCalledWith(2007)
+    expect(wrapper.text()).toContain('5h|43|2099-03-07T12:00:00Z|indigo')
+    expect(wrapper.text()).not.toContain('Spark 5h')
+    expect(wrapper.text()).not.toContain('Spark 7d')
   })
 
   it('OpenAI OAuth 有现成快照时，手动刷新信号会触发 usage 重拉', async () => {

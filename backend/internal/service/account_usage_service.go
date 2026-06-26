@@ -542,11 +542,14 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
 		usage.SevenDay = progress
 	}
-	if progress := buildCodexUsageProgressFromExtraWithPrefix(account.Extra, "codex_spark", "5h", now); progress != nil {
-		usage.CodexSparkFiveHour = progress
-	}
-	if progress := buildCodexUsageProgressFromExtraWithPrefix(account.Extra, "codex_spark", "7d", now); progress != nil {
-		usage.CodexSparkSevenDay = progress
+	includeSpark := accountEligibleForOpenAISparkUsage(account)
+	if includeSpark {
+		if progress := buildCodexUsageProgressFromExtraWithPrefix(account.Extra, "codex_spark", "5h", now); progress != nil {
+			usage.CodexSparkFiveHour = progress
+		}
+		if progress := buildCodexUsageProgressFromExtraWithPrefix(account.Extra, "codex_spark", "7d", now); progress != nil {
+			usage.CodexSparkSevenDay = progress
+		}
 	}
 
 	if (force || shouldRefreshOpenAICodexSnapshot(account, usage, now)) && s.shouldProbeOpenAICodexSnapshot(account.ID, now, force) {
@@ -561,11 +564,13 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 			if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
 				usage.SevenDay = progress
 			}
-			if progress := buildCodexUsageProgressFromExtraWithPrefix(account.Extra, "codex_spark", "5h", now); progress != nil {
-				usage.CodexSparkFiveHour = progress
-			}
-			if progress := buildCodexUsageProgressFromExtraWithPrefix(account.Extra, "codex_spark", "7d", now); progress != nil {
-				usage.CodexSparkSevenDay = progress
+			if includeSpark {
+				if progress := buildCodexUsageProgressFromExtraWithPrefix(account.Extra, "codex_spark", "5h", now); progress != nil {
+					usage.CodexSparkFiveHour = progress
+				}
+				if progress := buildCodexUsageProgressFromExtraWithPrefix(account.Extra, "codex_spark", "7d", now); progress != nil {
+					usage.CodexSparkSevenDay = progress
+				}
 			}
 		}
 	}
@@ -589,6 +594,22 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	}
 
 	return usage, nil
+}
+
+func accountEligibleForOpenAISparkUsage(account *Account) bool {
+	if account == nil || !account.IsOpenAIOAuth() {
+		return false
+	}
+	return openAIPlanEligibleForSparkUsage(account.GetCredential("plan_type"))
+}
+
+func openAIPlanEligibleForSparkUsage(planType string) bool {
+	switch strings.ToLower(strings.TrimSpace(planType)) {
+	case "pro", "prolite":
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldRefreshOpenAICodexSnapshot(account *Account, usage *UsageInfo, now time.Time) bool {
@@ -641,8 +662,8 @@ func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(accountID int64, no
 	return true
 }
 
-func openAICodexProbeModels(force bool) []string {
-	if force {
+func openAICodexProbeModels(force bool, includeSpark bool) []string {
+	if force && includeSpark {
 		return []string{openaipkg.DefaultTestModel, openAICodexSparkProbeModel}
 	}
 	return []string{openaipkg.DefaultTestModel}
@@ -660,7 +681,7 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	var combinedUpdates map[string]any
 	var firstErr error
 	probeSucceeded := false
-	for _, modelID := range openAICodexProbeModels(force) {
+	for _, modelID := range openAICodexProbeModels(force, accountEligibleForOpenAISparkUsage(account)) {
 		updates, err := s.probeOpenAICodexSnapshotForModel(ctx, account, accessToken, modelID)
 		if err != nil {
 			if firstErr == nil {

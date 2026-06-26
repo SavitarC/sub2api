@@ -76,6 +76,29 @@ describe('buildOpenAIUsageRefreshKey', () => {
     expect(buildOpenAIUsageRefreshKey(base)).not.toBe(buildOpenAIUsageRefreshKey(next))
   })
 
+  it('会在 OpenAI plan_type 变化时生成不同 key', () => {
+    const base = {
+      id: 5,
+      platform: 'openai',
+      type: 'oauth',
+      updated_at: '2026-03-07T10:00:00Z',
+      last_used_at: '2026-03-07T09:59:00Z',
+      credentials: {
+        plan_type: 'free'
+      },
+      extra: {}
+    } as any
+
+    const next = {
+      ...base,
+      credentials: {
+        plan_type: 'prolite'
+      }
+    }
+
+    expect(buildOpenAIUsageRefreshKey(base)).not.toBe(buildOpenAIUsageRefreshKey(next))
+  })
+
   it('非 OpenAI OAuth 账号返回空 key', () => {
     expect(buildOpenAIUsageRefreshKey({
       id: 2,
