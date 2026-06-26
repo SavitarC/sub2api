@@ -291,34 +291,45 @@ type openAIWSRetryMetrics struct {
 type accountWriteThrottle struct {
 	minInterval time.Duration
 	mu          sync.Mutex
-	lastByID    map[int64]time.Time
+	lastByKey   map[string]time.Time
 }
 
 func newAccountWriteThrottle(minInterval time.Duration) *accountWriteThrottle {
 	return &accountWriteThrottle{
 		minInterval: minInterval,
-		lastByID:    make(map[int64]time.Time),
+		lastByKey:   make(map[string]time.Time),
 	}
 }
 
 func (t *accountWriteThrottle) Allow(id int64, now time.Time) bool {
-	if t == nil || id <= 0 || t.minInterval <= 0 {
+	if id <= 0 {
+		return true
+	}
+	return t.AllowKey(strconv.FormatInt(id, 10), now)
+}
+
+func (t *accountWriteThrottle) AllowKey(key string, now time.Time) bool {
+	key = strings.TrimSpace(key)
+	if t == nil || t.minInterval <= 0 {
+		return true
+	}
+	if key == "" {
 		return true
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if last, ok := t.lastByID[id]; ok && now.Sub(last) < t.minInterval {
+	if last, ok := t.lastByKey[key]; ok && now.Sub(last) < t.minInterval {
 		return false
 	}
-	t.lastByID[id] = now
+	t.lastByKey[key] = now
 
-	if len(t.lastByID) > 4096 {
+	if len(t.lastByKey) > 4096 {
 		cutoff := now.Add(-4 * t.minInterval)
-		for accountID, writtenAt := range t.lastByID {
+		for throttleKey, writtenAt := range t.lastByKey {
 			if writtenAt.Before(cutoff) {
-				delete(t.lastByID, accountID)
+				delete(t.lastByKey, throttleKey)
 			}
 		}
 	}
@@ -3288,7 +3299,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		// Extract and save Codex usage snapshot from response headers (for OAuth accounts)
 		if account.Type == AccountTypeOAuth {
 			if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-				s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+				s.updateCodexUsageSnapshotForModel(ctx, account.ID, snapshot, upstreamModel)
 			}
 		}
 
@@ -3523,7 +3534,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	s.bindHTTPResponseAccount(ctx, c, account, responseID)
 
 	if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-		s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+		snapshotModel := resolveOpenAIPassthroughCodexSnapshotModel(reqModel, upstreamPassthroughModel, body)
+		s.updateCodexUsageSnapshotForModel(ctx, account.ID, snapshot, snapshotModel)
 	}
 
 	if usage == nil {
@@ -6692,8 +6704,38 @@ func codexResetAtRFC3339(base time.Time, resetAfterSeconds *int) *string {
 }
 
 func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow time.Time) map[string]any {
+	return buildCodexUsageExtraUpdatesWithPrefix(snapshot, fallbackNow, "codex")
+}
+
+func resolveOpenAIPassthroughCodexSnapshotModel(reqModel, upstreamPassthroughModel string, body []byte) string {
+	if model := strings.TrimSpace(upstreamPassthroughModel); model != "" {
+		return model
+	}
+	if len(body) > 0 {
+		if model := strings.TrimSpace(gjson.GetBytes(body, "model").String()); model != "" {
+			return model
+		}
+	}
+	return strings.TrimSpace(reqModel)
+}
+
+func buildCodexUsageExtraUpdatesForModel(snapshot *OpenAICodexUsageSnapshot, fallbackNow time.Time, model string) map[string]any {
+	return buildCodexUsageExtraUpdatesWithPrefix(snapshot, fallbackNow, codexUsageExtraPrefixForModel(model))
+}
+
+func codexUsageExtraPrefixForModel(model string) string {
+	if isCodexSparkModel(model) {
+		return "codex_spark"
+	}
+	return "codex"
+}
+
+func buildCodexUsageExtraUpdatesWithPrefix(snapshot *OpenAICodexUsageSnapshot, fallbackNow time.Time, prefix string) map[string]any {
 	if snapshot == nil {
 		return nil
+	}
+	if strings.TrimSpace(prefix) == "" {
+		prefix = "codex"
 	}
 
 	baseTime := codexSnapshotBaseTime(snapshot, fallbackNow)
@@ -6701,53 +6743,53 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 
 	// 保存原始 primary/secondary 字段，便于排查问题
 	if snapshot.PrimaryUsedPercent != nil {
-		updates["codex_primary_used_percent"] = *snapshot.PrimaryUsedPercent
+		updates[prefix+"_primary_used_percent"] = *snapshot.PrimaryUsedPercent
 	}
 	if snapshot.PrimaryResetAfterSeconds != nil {
-		updates["codex_primary_reset_after_seconds"] = *snapshot.PrimaryResetAfterSeconds
+		updates[prefix+"_primary_reset_after_seconds"] = *snapshot.PrimaryResetAfterSeconds
 	}
 	if snapshot.PrimaryWindowMinutes != nil {
-		updates["codex_primary_window_minutes"] = *snapshot.PrimaryWindowMinutes
+		updates[prefix+"_primary_window_minutes"] = *snapshot.PrimaryWindowMinutes
 	}
 	if snapshot.SecondaryUsedPercent != nil {
-		updates["codex_secondary_used_percent"] = *snapshot.SecondaryUsedPercent
+		updates[prefix+"_secondary_used_percent"] = *snapshot.SecondaryUsedPercent
 	}
 	if snapshot.SecondaryResetAfterSeconds != nil {
-		updates["codex_secondary_reset_after_seconds"] = *snapshot.SecondaryResetAfterSeconds
+		updates[prefix+"_secondary_reset_after_seconds"] = *snapshot.SecondaryResetAfterSeconds
 	}
 	if snapshot.SecondaryWindowMinutes != nil {
-		updates["codex_secondary_window_minutes"] = *snapshot.SecondaryWindowMinutes
+		updates[prefix+"_secondary_window_minutes"] = *snapshot.SecondaryWindowMinutes
 	}
 	if snapshot.PrimaryOverSecondaryPercent != nil {
-		updates["codex_primary_over_secondary_percent"] = *snapshot.PrimaryOverSecondaryPercent
+		updates[prefix+"_primary_over_secondary_percent"] = *snapshot.PrimaryOverSecondaryPercent
 	}
-	updates["codex_usage_updated_at"] = baseTime.Format(time.RFC3339)
+	updates[prefix+"_usage_updated_at"] = baseTime.Format(time.RFC3339)
 
 	// 归一化到 5h/7d 规范字段
 	if normalized := snapshot.Normalize(); normalized != nil {
 		if normalized.Used5hPercent != nil {
-			updates["codex_5h_used_percent"] = *normalized.Used5hPercent
+			updates[prefix+"_5h_used_percent"] = *normalized.Used5hPercent
 		}
 		if normalized.Reset5hSeconds != nil {
-			updates["codex_5h_reset_after_seconds"] = *normalized.Reset5hSeconds
+			updates[prefix+"_5h_reset_after_seconds"] = *normalized.Reset5hSeconds
 		}
 		if normalized.Window5hMinutes != nil {
-			updates["codex_5h_window_minutes"] = *normalized.Window5hMinutes
+			updates[prefix+"_5h_window_minutes"] = *normalized.Window5hMinutes
 		}
 		if normalized.Used7dPercent != nil {
-			updates["codex_7d_used_percent"] = *normalized.Used7dPercent
+			updates[prefix+"_7d_used_percent"] = *normalized.Used7dPercent
 		}
 		if normalized.Reset7dSeconds != nil {
-			updates["codex_7d_reset_after_seconds"] = *normalized.Reset7dSeconds
+			updates[prefix+"_7d_reset_after_seconds"] = *normalized.Reset7dSeconds
 		}
 		if normalized.Window7dMinutes != nil {
-			updates["codex_7d_window_minutes"] = *normalized.Window7dMinutes
+			updates[prefix+"_7d_window_minutes"] = *normalized.Window7dMinutes
 		}
 		if reset5hAt := codexResetAtRFC3339(baseTime, normalized.Reset5hSeconds); reset5hAt != nil {
-			updates["codex_5h_reset_at"] = *reset5hAt
+			updates[prefix+"_5h_reset_at"] = *reset5hAt
 		}
 		if reset7dAt := codexResetAtRFC3339(baseTime, normalized.Reset7dSeconds); reset7dAt != nil {
-			updates["codex_7d_reset_at"] = *reset7dAt
+			updates[prefix+"_7d_reset_at"] = *reset7dAt
 		}
 	}
 
@@ -6756,6 +6798,10 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 
 // updateCodexUsageSnapshot saves the Codex usage snapshot to account's Extra field
 func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, accountID int64, snapshot *OpenAICodexUsageSnapshot) {
+	s.updateCodexUsageSnapshotForModel(ctx, accountID, snapshot, "")
+}
+
+func (s *OpenAIGatewayService) updateCodexUsageSnapshotForModel(ctx context.Context, accountID int64, snapshot *OpenAICodexUsageSnapshot, model string) {
 	if snapshot == nil {
 		return
 	}
@@ -6764,11 +6810,13 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 	}
 
 	now := time.Now()
-	updates := buildCodexUsageExtraUpdates(snapshot, now)
+	updates := buildCodexUsageExtraUpdatesForModel(snapshot, now, model)
 	if len(updates) == 0 {
 		return
 	}
-	if !s.getCodexSnapshotThrottle().Allow(accountID, now) {
+	prefix := codexUsageExtraPrefixForModel(model)
+	throttleKey := strconv.FormatInt(accountID, 10) + ":" + prefix
+	if !s.getCodexSnapshotThrottle().AllowKey(throttleKey, now) {
 		return
 	}
 

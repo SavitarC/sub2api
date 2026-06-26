@@ -440,6 +440,45 @@ func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_ThrottlesExtraWrites(t *t
 	}
 }
 
+func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_ThrottlesNormalAndSparkSeparately(t *testing.T) {
+	repo := &openAICodexSnapshotAsyncRepo{
+		updateExtraCh: make(chan map[string]any, 2),
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:           repo,
+		codexSnapshotThrottle: newAccountWriteThrottle(time.Hour),
+	}
+	snapshot := &OpenAICodexUsageSnapshot{
+		PrimaryUsedPercent:         ptrFloat64WS(16),
+		PrimaryResetAfterSeconds:   ptrIntWS(604800),
+		PrimaryWindowMinutes:       ptrIntWS(10080),
+		SecondaryUsedPercent:       ptrFloat64WS(0),
+		SecondaryResetAfterSeconds: ptrIntWS(18000),
+		SecondaryWindowMinutes:     ptrIntWS(300),
+	}
+
+	svc.updateCodexUsageSnapshotForModel(context.Background(), 778, snapshot, "gpt-5.4")
+	svc.updateCodexUsageSnapshotForModel(context.Background(), 778, snapshot, "gpt-5.3-codex-spark")
+
+	seenNormal := false
+	seenSpark := false
+	for i := 0; i < 2; i++ {
+		select {
+		case updates := <-repo.updateExtraCh:
+			if _, ok := updates["codex_5h_used_percent"]; ok {
+				seenNormal = true
+			}
+			if _, ok := updates["codex_spark_5h_used_percent"]; ok {
+				seenSpark = true
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("等待 codex/spark 快照落库超时")
+		}
+	}
+	require.True(t, seenNormal, "normal codex snapshot should be persisted")
+	require.True(t, seenSpark, "spark codex snapshot should be persisted")
+}
+
 func ptrFloat64WS(v float64) *float64 { return &v }
 func ptrIntWS(v int) *int             { return &v }
 

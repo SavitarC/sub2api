@@ -137,6 +137,78 @@ func TestBuildCodexUsageExtraUpdates_FreshAccountUsedPercentNotInverted_Issue299
 	}
 }
 
+func TestBuildCodexUsageExtraUpdatesForModel_SparkUsesSeparateKeys(t *testing.T) {
+	primaryUsed := 16.0
+	primaryReset := 604800
+	primaryWindow := 10080
+	secondaryUsed := 0.0
+	secondaryReset := 18000
+	secondaryWindow := 300
+
+	snapshot := &OpenAICodexUsageSnapshot{
+		PrimaryUsedPercent:         &primaryUsed,
+		PrimaryResetAfterSeconds:   &primaryReset,
+		PrimaryWindowMinutes:       &primaryWindow,
+		SecondaryUsedPercent:       &secondaryUsed,
+		SecondaryResetAfterSeconds: &secondaryReset,
+		SecondaryWindowMinutes:     &secondaryWindow,
+		UpdatedAt:                  "2026-06-26T10:00:00Z",
+	}
+
+	updates := buildCodexUsageExtraUpdatesForModel(snapshot, time.Date(2026, 6, 26, 10, 0, 0, 0, time.UTC), "gpt-5.3-codex-spark")
+	if updates == nil {
+		t.Fatal("expected non-nil updates")
+	}
+
+	if got := updates["codex_spark_usage_updated_at"]; got != "2026-06-26T10:00:00Z" {
+		t.Fatalf("codex_spark_usage_updated_at = %v, want %s", got, "2026-06-26T10:00:00Z")
+	}
+	if got := updates["codex_spark_5h_used_percent"]; got != 0.0 {
+		t.Fatalf("codex_spark_5h_used_percent = %v, want 0", got)
+	}
+	if got := updates["codex_spark_7d_used_percent"]; got != 16.0 {
+		t.Fatalf("codex_spark_7d_used_percent = %v, want 16", got)
+	}
+	if _, ok := updates["codex_5h_used_percent"]; ok {
+		t.Fatalf("spark snapshot must not overwrite normal codex_5h_used_percent: %v", updates["codex_5h_used_percent"])
+	}
+	if _, ok := updates["codex_7d_used_percent"]; ok {
+		t.Fatalf("spark snapshot must not overwrite normal codex_7d_used_percent: %v", updates["codex_7d_used_percent"])
+	}
+}
+
+func TestResolveOpenAIPassthroughCodexSnapshotModel(t *testing.T) {
+	t.Run("prefers upstream passthrough model", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5.3-codex-spark","stream":true}`)
+
+		got := resolveOpenAIPassthroughCodexSnapshotModel("gpt-5.2", "gpt-5.4", body)
+
+		if got != "gpt-5.4" {
+			t.Fatalf("resolveOpenAIPassthroughCodexSnapshotModel(...) = %q, want %q", got, "gpt-5.4")
+		}
+	})
+
+	t.Run("falls back to final body model", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5.3-codex-spark","stream":true}`)
+
+		got := resolveOpenAIPassthroughCodexSnapshotModel("gpt-5.2", "", body)
+
+		if got != "gpt-5.3-codex-spark" {
+			t.Fatalf("resolveOpenAIPassthroughCodexSnapshotModel(...) = %q, want %q", got, "gpt-5.3-codex-spark")
+		}
+	})
+
+	t.Run("falls back to request model when body has no model", func(t *testing.T) {
+		body := []byte(`{"stream":true}`)
+
+		got := resolveOpenAIPassthroughCodexSnapshotModel("gpt-5.2", "", body)
+
+		if got != "gpt-5.2" {
+			t.Fatalf("resolveOpenAIPassthroughCodexSnapshotModel(...) = %q, want %q", got, "gpt-5.2")
+		}
+	})
+}
+
 func TestBuildCodexUsageExtraUpdates_FallbackToNowWhenUpdatedAtInvalid(t *testing.T) {
 	primaryUsed := 15.0
 	primaryReset := 30

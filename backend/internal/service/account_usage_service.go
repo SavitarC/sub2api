@@ -105,13 +105,14 @@ type antigravityUsageCache struct {
 }
 
 const (
-	apiCacheTTL             = 3 * time.Minute
-	apiErrorCacheTTL        = 1 * time.Minute        // 负缓存 TTL：429 等错误缓存 1 分钟
-	antigravityErrorTTL     = 1 * time.Minute        // Antigravity 错误缓存 TTL（可恢复错误）
-	apiQueryMaxJitter       = 800 * time.Millisecond // 用量查询最大随机延迟
-	windowStatsCacheTTL     = 1 * time.Minute
-	openAIProbeCacheTTL     = 10 * time.Minute
-	openAICodexProbeVersion = "0.125.0"
+	apiCacheTTL                = 3 * time.Minute
+	apiErrorCacheTTL           = 1 * time.Minute        // 负缓存 TTL：429 等错误缓存 1 分钟
+	antigravityErrorTTL        = 1 * time.Minute        // Antigravity 错误缓存 TTL（可恢复错误）
+	apiQueryMaxJitter          = 800 * time.Millisecond // 用量查询最大随机延迟
+	windowStatsCacheTTL        = 1 * time.Minute
+	openAIProbeCacheTTL        = 10 * time.Minute
+	openAICodexProbeVersion    = "0.125.0"
+	openAICodexSparkProbeModel = "gpt-5.3-codex-spark"
 )
 
 // UsageCache 封装账户使用量相关的缓存
@@ -179,17 +180,19 @@ type AICredit struct {
 
 // UsageInfo 账号使用量信息
 type UsageInfo struct {
-	Source             string         `json:"source,omitempty"`               // "passive" or "active"
-	UpdatedAt          *time.Time     `json:"updated_at,omitempty"`           // 更新时间
-	FiveHour           *UsageProgress `json:"five_hour"`                      // 5小时窗口
-	SevenDay           *UsageProgress `json:"seven_day,omitempty"`            // 7天窗口
-	SevenDaySonnet     *UsageProgress `json:"seven_day_sonnet,omitempty"`     // 7天Sonnet窗口
-	GeminiSharedDaily  *UsageProgress `json:"gemini_shared_daily,omitempty"`  // Gemini shared pool RPD (Google One / Code Assist)
-	GeminiProDaily     *UsageProgress `json:"gemini_pro_daily,omitempty"`     // Gemini Pro 日配额
-	GeminiFlashDaily   *UsageProgress `json:"gemini_flash_daily,omitempty"`   // Gemini Flash 日配额
-	GeminiSharedMinute *UsageProgress `json:"gemini_shared_minute,omitempty"` // Gemini shared pool RPM (Google One / Code Assist)
-	GeminiProMinute    *UsageProgress `json:"gemini_pro_minute,omitempty"`    // Gemini Pro RPM
-	GeminiFlashMinute  *UsageProgress `json:"gemini_flash_minute,omitempty"`  // Gemini Flash RPM
+	Source             string         `json:"source,omitempty"`                // "passive" or "active"
+	UpdatedAt          *time.Time     `json:"updated_at,omitempty"`            // 更新时间
+	FiveHour           *UsageProgress `json:"five_hour"`                       // 5小时窗口
+	SevenDay           *UsageProgress `json:"seven_day,omitempty"`             // 7天窗口
+	SevenDaySonnet     *UsageProgress `json:"seven_day_sonnet,omitempty"`      // 7天Sonnet窗口
+	CodexSparkFiveHour *UsageProgress `json:"codex_spark_five_hour,omitempty"` // GPT-5.3-Codex-Spark 5小时窗口
+	CodexSparkSevenDay *UsageProgress `json:"codex_spark_seven_day,omitempty"` // GPT-5.3-Codex-Spark 7天窗口
+	GeminiSharedDaily  *UsageProgress `json:"gemini_shared_daily,omitempty"`   // Gemini shared pool RPD (Google One / Code Assist)
+	GeminiProDaily     *UsageProgress `json:"gemini_pro_daily,omitempty"`      // Gemini Pro 日配额
+	GeminiFlashDaily   *UsageProgress `json:"gemini_flash_daily,omitempty"`    // Gemini Flash 日配额
+	GeminiSharedMinute *UsageProgress `json:"gemini_shared_minute,omitempty"`  // Gemini shared pool RPM (Google One / Code Assist)
+	GeminiProMinute    *UsageProgress `json:"gemini_pro_minute,omitempty"`     // Gemini Pro RPM
+	GeminiFlashMinute  *UsageProgress `json:"gemini_flash_minute,omitempty"`   // Gemini Flash RPM
 
 	// Antigravity 多模型配额
 	AntigravityQuota map[string]*AntigravityModelQuota `json:"antigravity_quota,omitempty"`
@@ -539,9 +542,15 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
 		usage.SevenDay = progress
 	}
+	if progress := buildCodexUsageProgressFromExtraWithPrefix(account.Extra, "codex_spark", "5h", now); progress != nil {
+		usage.CodexSparkFiveHour = progress
+	}
+	if progress := buildCodexUsageProgressFromExtraWithPrefix(account.Extra, "codex_spark", "7d", now); progress != nil {
+		usage.CodexSparkSevenDay = progress
+	}
 
 	if (force || shouldRefreshOpenAICodexSnapshot(account, usage, now)) && s.shouldProbeOpenAICodexSnapshot(account.ID, now, force) {
-		if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
+		if updates, err := s.probeOpenAICodexSnapshot(ctx, account, force); err == nil && len(updates) > 0 {
 			mergeAccountExtra(account, updates)
 			if usage.UpdatedAt == nil {
 				usage.UpdatedAt = &now
@@ -551,6 +560,12 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 			}
 			if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
 				usage.SevenDay = progress
+			}
+			if progress := buildCodexUsageProgressFromExtraWithPrefix(account.Extra, "codex_spark", "5h", now); progress != nil {
+				usage.CodexSparkFiveHour = progress
+			}
+			if progress := buildCodexUsageProgressFromExtraWithPrefix(account.Extra, "codex_spark", "7d", now); progress != nil {
+				usage.CodexSparkSevenDay = progress
 			}
 		}
 	}
@@ -626,7 +641,14 @@ func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(accountID int64, no
 	return true
 }
 
-func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, account *Account) (map[string]any, error) {
+func openAICodexProbeModels(force bool) []string {
+	if force {
+		return []string{openaipkg.DefaultTestModel, openAICodexSparkProbeModel}
+	}
+	return []string{openaipkg.DefaultTestModel}
+}
+
+func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, account *Account, force bool) (map[string]any, error) {
 	if account == nil || !account.IsOAuth() {
 		return nil, nil
 	}
@@ -634,7 +656,28 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	if accessToken == "" {
 		return nil, fmt.Errorf("no access token available")
 	}
-	modelID := openaipkg.DefaultTestModel
+
+	var combinedUpdates map[string]any
+	var firstErr error
+	probeSucceeded := false
+	for _, modelID := range openAICodexProbeModels(force) {
+		updates, err := s.probeOpenAICodexSnapshotForModel(ctx, account, accessToken, modelID)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		probeSucceeded = true
+		combinedUpdates = mergeExtraUpdates(combinedUpdates, updates)
+	}
+	if !probeSucceeded && firstErr != nil {
+		return nil, firstErr
+	}
+	return combinedUpdates, nil
+}
+
+func (s *AccountUsageService) probeOpenAICodexSnapshotForModel(ctx context.Context, account *Account, accessToken string, modelID string) (map[string]any, error) {
 	payload := createOpenAITestPayload(modelID, true)
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -680,7 +723,7 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	updates, err := extractOpenAICodexProbeUpdates(resp)
+	updates, err := extractOpenAICodexProbeUpdatesForModel(resp, modelID)
 	if err != nil {
 		return nil, err
 	}
@@ -707,11 +750,15 @@ func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, u
 }
 
 func extractOpenAICodexProbeUpdates(resp *http.Response) (map[string]any, error) {
+	return extractOpenAICodexProbeUpdatesForModel(resp, "")
+}
+
+func extractOpenAICodexProbeUpdatesForModel(resp *http.Response, model string) (map[string]any, error) {
 	if resp == nil {
 		return nil, nil
 	}
 	if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-		return buildCodexUsageExtraUpdates(snapshot, time.Now()), nil
+		return buildCodexUsageExtraUpdatesForModel(snapshot, time.Now(), model), nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("openai codex probe returned status %d", resp.StatusCode)
@@ -1110,8 +1157,15 @@ func windowStatsFromAccountStats(stats *usagestats.AccountStats) *WindowStats {
 }
 
 func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now time.Time) *UsageProgress {
+	return buildCodexUsageProgressFromExtraWithPrefix(extra, "codex", window, now)
+}
+
+func buildCodexUsageProgressFromExtraWithPrefix(extra map[string]any, prefix string, window string, now time.Time) *UsageProgress {
 	if len(extra) == 0 {
 		return nil
+	}
+	if strings.TrimSpace(prefix) == "" {
+		prefix = "codex"
 	}
 
 	var (
@@ -1122,13 +1176,13 @@ func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now t
 
 	switch window {
 	case "5h":
-		usedPercentKey = "codex_5h_used_percent"
-		resetAfterKey = "codex_5h_reset_after_seconds"
-		resetAtKey = "codex_5h_reset_at"
+		usedPercentKey = prefix + "_5h_used_percent"
+		resetAfterKey = prefix + "_5h_reset_after_seconds"
+		resetAtKey = prefix + "_5h_reset_at"
 	case "7d":
-		usedPercentKey = "codex_7d_used_percent"
-		resetAfterKey = "codex_7d_reset_after_seconds"
-		resetAtKey = "codex_7d_reset_at"
+		usedPercentKey = prefix + "_7d_used_percent"
+		resetAfterKey = prefix + "_7d_reset_after_seconds"
+		resetAtKey = prefix + "_7d_reset_at"
 	default:
 		return nil
 	}
@@ -1151,7 +1205,7 @@ func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now t
 	if progress.ResetsAt == nil {
 		if resetAfterSeconds := parseExtraInt(extra[resetAfterKey]); resetAfterSeconds > 0 {
 			base := now
-			if updatedAtRaw, ok := extra["codex_usage_updated_at"]; ok {
+			if updatedAtRaw, ok := extra[prefix+"_usage_updated_at"]; ok {
 				if updatedAt, err := parseTime(fmt.Sprint(updatedAtRaw)); err == nil {
 					base = updatedAt
 				}

@@ -415,7 +415,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		if account.Platform == PlatformGrok {
 			s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
 		} else if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-			s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+			s.updateCodexUsageSnapshotForModel(ctx, account.ID, snapshot, upstreamModel)
 		}
 	}
 

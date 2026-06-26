@@ -130,6 +130,22 @@
           :show-now-when-idle="true"
           color="emerald"
         />
+        <UsageProgressBar
+          v-if="usageInfo?.codex_spark_five_hour"
+          label="Spark 5h"
+          :utilization="usageInfo.codex_spark_five_hour.utilization"
+          :resets-at="usageInfo.codex_spark_five_hour.resets_at"
+          :show-now-when-idle="true"
+          color="indigo"
+        />
+        <UsageProgressBar
+          v-if="usageInfo?.codex_spark_seven_day"
+          label="Spark 7d"
+          :utilization="usageInfo.codex_spark_seven_day.utilization"
+          :resets-at="usageInfo.codex_spark_seven_day.resets_at"
+          :show-now-when-idle="true"
+          color="emerald"
+        />
         <!--
           Upstream codex /wham/usage quota query + reset. The local active-sampling
           refresh button is rendered via the pre-actions slot so the user sees a
@@ -676,7 +692,12 @@ const geminiUsageAvailable = computed(() => {
 
 const hasOpenAIUsageFallback = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
-  return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day
+  return (
+    !!usageInfo.value?.five_hour ||
+    !!usageInfo.value?.seven_day ||
+    !!usageInfo.value?.codex_spark_five_hour ||
+    !!usageInfo.value?.codex_spark_seven_day
+  )
 })
 
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))

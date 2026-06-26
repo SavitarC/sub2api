@@ -50,6 +50,32 @@ describe('buildOpenAIUsageRefreshKey', () => {
     expect(buildOpenAIUsageRefreshKey(base)).not.toBe(buildOpenAIUsageRefreshKey(next))
   })
 
+  it('会在 Spark codex 快照变化时生成不同 key', () => {
+    const base = {
+      id: 4,
+      platform: 'openai',
+      type: 'oauth',
+      updated_at: '2026-03-07T10:00:00Z',
+      last_used_at: '2026-03-07T09:59:00Z',
+      extra: {
+        codex_spark_usage_updated_at: '2026-03-07T10:00:00Z',
+        codex_spark_5h_used_percent: 0,
+        codex_spark_7d_used_percent: 16
+      }
+    } as any
+
+    const next = {
+      ...base,
+      extra: {
+        ...base.extra,
+        codex_spark_usage_updated_at: '2026-03-07T10:05:00Z',
+        codex_spark_7d_used_percent: 17
+      }
+    }
+
+    expect(buildOpenAIUsageRefreshKey(base)).not.toBe(buildOpenAIUsageRefreshKey(next))
+  })
+
   it('非 OpenAI OAuth 账号返回空 key', () => {
     expect(buildOpenAIUsageRefreshKey({
       id: 2,

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 type accountUsageCodexProbeRepo struct {
@@ -92,6 +94,26 @@ func TestExtractOpenAICodexProbeUpdatesAccepts429WithCodexHeaders(t *testing.T) 
 	}
 }
 
+func TestOpenAICodexProbeModels(t *testing.T) {
+	t.Parallel()
+
+	passive := openAICodexProbeModels(false)
+	if len(passive) != 1 || passive[0] != openaipkg.DefaultTestModel {
+		t.Fatalf("openAICodexProbeModels(false) = %#v, want only %q", passive, openaipkg.DefaultTestModel)
+	}
+
+	active := openAICodexProbeModels(true)
+	if len(active) != 2 {
+		t.Fatalf("openAICodexProbeModels(true) = %#v, want 2 models", active)
+	}
+	if active[0] != openaipkg.DefaultTestModel {
+		t.Fatalf("active first model = %q, want %q", active[0], openaipkg.DefaultTestModel)
+	}
+	if active[1] != openAICodexSparkProbeModel {
+		t.Fatalf("active second model = %q, want %q", active[1], openAICodexSparkProbeModel)
+	}
+}
+
 func TestAccountUsageService_PersistOpenAICodexProbeSnapshotOnlyUpdatesExtra(t *testing.T) {
 	t.Parallel()
 
@@ -154,6 +176,42 @@ func TestAccountUsageService_GetOpenAIUsage_DoesNotPromoteCodexExtraToRateLimit(
 	case got := <-repo.rateLimitCh:
 		t.Fatalf("不应将已耗尽的 codex extra 持久化为运行时限流状态: %v", got)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestAccountUsageService_GetOpenAIUsage_ReturnsSparkSnapshot(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	svc := &AccountUsageService{}
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"codex_5h_used_percent": 43.0,
+			"codex_5h_reset_at":     now.Add(30 * time.Minute).Format(time.RFC3339),
+			"codex_7d_used_percent": 32.0,
+			"codex_7d_reset_at":     now.Add(6 * 24 * time.Hour).Format(time.RFC3339),
+
+			"codex_spark_5h_used_percent": 0.0,
+			"codex_spark_5h_reset_at":     now.Add(5 * time.Hour).Format(time.RFC3339),
+			"codex_spark_7d_used_percent": 16.0,
+			"codex_spark_7d_reset_at":     now.Add(6*24*time.Hour + 9*time.Hour).Format(time.RFC3339),
+		},
+	}
+
+	usage, err := svc.getOpenAIUsage(context.Background(), account, false)
+	if err != nil {
+		t.Fatalf("getOpenAIUsage() error = %v", err)
+	}
+	if usage.FiveHour == nil || usage.FiveHour.Utilization != 43.0 {
+		t.Fatalf("normal 5h usage = %#v, want utilization 43", usage.FiveHour)
+	}
+	if usage.CodexSparkFiveHour == nil || usage.CodexSparkFiveHour.Utilization != 0.0 {
+		t.Fatalf("spark 5h usage = %#v, want utilization 0", usage.CodexSparkFiveHour)
+	}
+	if usage.CodexSparkSevenDay == nil || usage.CodexSparkSevenDay.Utilization != 16.0 {
+		t.Fatalf("spark 7d usage = %#v, want utilization 16", usage.CodexSparkSevenDay)
 	}
 }
 
