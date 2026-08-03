@@ -2489,6 +2489,131 @@
             </div>
           </div>
 
+          <!-- Feishu OAuth 登录 -->
+          <div class="card">
+            <div
+              class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
+            >
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.feishu.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.feishu.description") }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div class="flex items-center justify-between">
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">{{
+                    t("admin.settings.feishu.enable")
+                  }}</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.feishu.enableHint") }}
+                  </p>
+                </div>
+                <Toggle
+                  v-model="form.feishu_connect_enabled"
+                  data-testid="feishu-connect-enabled"
+                />
+              </div>
+
+              <div
+                v-if="form.feishu_connect_enabled"
+                class="border-t border-gray-100 pt-4 dark:border-dark-700"
+              >
+                <div class="grid grid-cols-1 gap-6">
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{ t("admin.settings.feishu.clientId") }}
+                    </label>
+                    <input
+                      v-model="form.feishu_connect_client_id"
+                      data-testid="feishu-connect-client-id"
+                      type="text"
+                      class="input font-mono text-sm"
+                      :placeholder="
+                        t('admin.settings.feishu.clientIdPlaceholder')
+                      "
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.feishu.clientIdHint") }}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{ t("admin.settings.feishu.clientSecret") }}
+                    </label>
+                    <input
+                      v-model="form.feishu_connect_client_secret"
+                      data-testid="feishu-connect-client-secret"
+                      type="password"
+                      class="input font-mono text-sm"
+                      :placeholder="
+                        form.feishu_connect_client_secret_configured
+                          ? t(
+                              'admin.settings.feishu.clientSecretConfiguredPlaceholder',
+                            )
+                          : t('admin.settings.feishu.clientSecretPlaceholder')
+                      "
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        form.feishu_connect_client_secret_configured
+                          ? t(
+                              "admin.settings.feishu.clientSecretConfiguredHint",
+                            )
+                          : t("admin.settings.feishu.clientSecretHint")
+                      }}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{ t("admin.settings.feishu.redirectUrl") }}
+                    </label>
+                    <input
+                      v-model="form.feishu_connect_redirect_url"
+                      data-testid="feishu-connect-redirect-url"
+                      type="url"
+                      class="input font-mono text-sm"
+                      :placeholder="
+                        t('admin.settings.feishu.redirectUrlPlaceholder')
+                      "
+                    />
+                    <div
+                      class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3"
+                    >
+                      <button
+                        type="button"
+                        data-testid="feishu-connect-generate-redirect-url"
+                        class="btn btn-secondary btn-sm w-fit"
+                        @click="setAndCopyFeishuRedirectUrl"
+                      >
+                        {{ t("admin.settings.feishu.quickSetCopy") }}
+                      </button>
+                      <code
+                        v-if="feishuRedirectUrlSuggestion"
+                        class="select-all break-all rounded bg-gray-50 px-2 py-1 font-mono text-xs text-gray-600 dark:bg-dark-800 dark:text-gray-300"
+                      >
+                        {{ feishuRedirectUrlSuggestion }}
+                      </code>
+                    </div>
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.feishu.redirectUrlHint") }}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- GitHub / Google 邮箱快捷登录 -->
           <div class="card">
             <div
@@ -9164,6 +9289,7 @@ type SettingsForm = Omit<
   tencent_captcha_cloud_secret_key: string;
   aliyun_captcha_access_key_secret: string;
   linuxdo_connect_client_secret: string;
+  feishu_connect_client_secret: string;
   dingtalk_connect_client_secret: string;
   wechat_connect_app_secret: string;
   wechat_connect_open_app_secret: string;
@@ -9316,6 +9442,12 @@ const form = reactive<SettingsForm>({
   linuxdo_connect_client_secret: "",
   linuxdo_connect_client_secret_configured: false,
   linuxdo_connect_redirect_url: "",
+  // Feishu OAuth 登录
+  feishu_connect_enabled: false,
+  feishu_connect_client_id: "",
+  feishu_connect_client_secret: "",
+  feishu_connect_client_secret_configured: false,
+  feishu_connect_redirect_url: "",
   // DingTalk Connect OAuth 登录
   dingtalk_connect_enabled: false,
   dingtalk_connect_client_id: "",
@@ -10122,6 +10254,22 @@ async function setAndCopyLinuxdoRedirectUrl() {
   );
 }
 
+// Feishu OAuth redirect URL suggestion
+const feishuRedirectUrlSuggestion = computed(() => {
+  return buildApiCallbackUrl("/auth/oauth/feishu/callback");
+});
+
+async function setAndCopyFeishuRedirectUrl() {
+  const url = feishuRedirectUrlSuggestion.value;
+  if (!url) return;
+
+  form.feishu_connect_redirect_url = url;
+  await copyToClipboard(
+    url,
+    t("admin.settings.feishu.redirectUrlSetAndCopied"),
+  );
+}
+
 type EmailOAuthProvider = "github" | "google";
 
 const githubOAuthRedirectUrlSuggestion = computed(() => {
@@ -10494,6 +10642,7 @@ async function loadSettings() {
     form.tencent_captcha_cloud_secret_key = "";
     form.aliyun_captcha_access_key_secret = "";
     form.linuxdo_connect_client_secret = "";
+    form.feishu_connect_client_secret = "";
     form.dingtalk_connect_client_secret = "";
     form.github_oauth_client_secret = "";
     form.google_oauth_client_secret = "";
@@ -10885,6 +11034,11 @@ async function saveSettings() {
       linuxdo_connect_client_secret:
         form.linuxdo_connect_client_secret || undefined,
       linuxdo_connect_redirect_url: form.linuxdo_connect_redirect_url,
+      feishu_connect_enabled: form.feishu_connect_enabled,
+      feishu_connect_client_id: form.feishu_connect_client_id,
+      feishu_connect_client_secret:
+        form.feishu_connect_client_secret || undefined,
+      feishu_connect_redirect_url: form.feishu_connect_redirect_url,
       dingtalk_connect_enabled: form.dingtalk_connect_enabled,
       dingtalk_connect_client_id: form.dingtalk_connect_client_id,
       dingtalk_connect_client_secret:
@@ -11170,6 +11324,7 @@ async function saveSettings() {
     form.turnstile_secret_key = "";
     form.aliyun_captcha_access_key_secret = "";
     form.linuxdo_connect_client_secret = "";
+    form.feishu_connect_client_secret = "";
     form.dingtalk_connect_client_secret = "";
     form.github_oauth_client_secret = "";
     form.google_oauth_client_secret = "";

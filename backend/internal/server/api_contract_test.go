@@ -67,6 +67,7 @@ func TestAPIContracts(t *testing.T) {
 					"balance_notify_extra_emails": null,
 					"total_recharged": 0,
 					"linuxdo_bound": false,
+					"feishu_bound": false,
 					"oidc_bound": false,
 					"wechat_bound": false,
 					"dingtalk_bound": false,
@@ -90,6 +91,14 @@ func TestAPIContracts(t *testing.T) {
 							"can_bind": true,
 							"can_unbind": false,
 							"bind_start_path": "/api/v1/auth/oauth/linuxdo/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						},
+						"feishu": {
+							"provider": "feishu",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/feishu/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
 						},
 						"oidc": {
 							"provider": "oidc",
@@ -137,6 +146,14 @@ func TestAPIContracts(t *testing.T) {
 							"can_unbind": false,
 							"bind_start_path": "/api/v1/auth/oauth/linuxdo/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
 						},
+						"feishu": {
+							"provider": "feishu",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/feishu/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						},
 						"oidc": {
 							"provider": "oidc",
 							"bound": false,
@@ -182,6 +199,14 @@ func TestAPIContracts(t *testing.T) {
 							"can_bind": true,
 							"can_unbind": false,
 							"bind_start_path": "/api/v1/auth/oauth/linuxdo/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
+						},
+						"feishu": {
+							"provider": "feishu",
+							"bound": false,
+							"bound_count": 0,
+							"can_bind": true,
+							"can_unbind": false,
+							"bind_start_path": "/api/v1/auth/oauth/feishu/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile"
 						},
 						"oidc": {
 							"provider": "oidc",
@@ -757,6 +782,10 @@ func TestAPIContracts(t *testing.T) {
 						"linuxdo_connect_client_id": "",
 						"linuxdo_connect_client_secret_configured": false,
 						"linuxdo_connect_redirect_url": "",
+						"feishu_connect_enabled": false,
+						"feishu_connect_client_id": "",
+						"feishu_connect_client_secret_configured": false,
+						"feishu_connect_redirect_url": "",
 						"dingtalk_connect_enabled": false,
 						"dingtalk_connect_bypass_registration": false,
 						"dingtalk_connect_client_id": "",
@@ -1097,6 +1126,10 @@ func TestAPIContracts(t *testing.T) {
 					"linuxdo_connect_client_id": "",
 					"linuxdo_connect_client_secret_configured": false,
 					"linuxdo_connect_redirect_url": "",
+					"feishu_connect_enabled": false,
+					"feishu_connect_client_id": "",
+					"feishu_connect_client_secret_configured": false,
+					"feishu_connect_redirect_url": "",
 					"dingtalk_connect_enabled": false,
 					"dingtalk_connect_bypass_registration": false,
 					"dingtalk_connect_client_id": "",

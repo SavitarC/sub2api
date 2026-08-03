@@ -144,6 +144,23 @@ vi.mock("@/utils/apiError", () => ({
 vi.mock("vue-i18n", async () => {
   const actual = await vi.importActual<typeof import("vue-i18n")>("vue-i18n");
   const translations: Record<string, string> = {
+    "admin.settings.feishu.title": "飞书登录",
+    "admin.settings.feishu.description": "配置飞书 OAuth，用于 Sub2API 用户登录",
+    "admin.settings.feishu.enable": "启用飞书登录",
+    "admin.settings.feishu.enableHint": "在登录/注册页面显示飞书登录入口",
+    "admin.settings.feishu.clientId": "App ID",
+    "admin.settings.feishu.clientIdPlaceholder": "例如：cli_xxxxxxxxxxxxxxxx",
+    "admin.settings.feishu.clientIdHint": "从飞书开放平台应用凭证页获取",
+    "admin.settings.feishu.clientSecret": "App Secret",
+    "admin.settings.feishu.clientSecretPlaceholder": "********",
+    "admin.settings.feishu.clientSecretHint": "用于后端交换用户访问凭证（请保密）",
+    "admin.settings.feishu.clientSecretConfiguredPlaceholder": "密钥已配置，留空以保留当前值。",
+    "admin.settings.feishu.clientSecretConfiguredHint": "密钥已配置，留空以保留当前值。",
+    "admin.settings.feishu.redirectUrl": "回调地址（Redirect URL）",
+    "admin.settings.feishu.redirectUrlPlaceholder": "https://your-domain.com/api/v1/auth/oauth/feishu/callback",
+    "admin.settings.feishu.redirectUrlHint": "需与飞书开放平台应用安全设置中的重定向 URL 一致",
+    "admin.settings.feishu.quickSetCopy": "使用当前站点生成并复制",
+    "admin.settings.feishu.redirectUrlSetAndCopied": "已生成并复制",
     "admin.settings.wechatConnect.title": "微信登录",
     "admin.settings.wechatConnect.description": "用于微信开放平台或公众号/小程序的第三方登录配置。",
     "admin.settings.wechatConnect.enabledLabel": "启用微信登录",
@@ -407,6 +424,11 @@ const baseSettingsResponse = {
   linuxdo_connect_client_id: "",
   linuxdo_connect_client_secret_configured: false,
   linuxdo_connect_redirect_url: "",
+  feishu_connect_enabled: true,
+  feishu_connect_client_id: "cli_mock_feishu_app",
+  feishu_connect_client_secret_configured: true,
+  feishu_connect_redirect_url:
+    "https://admin.example.com/api/v1/auth/oauth/feishu/callback",
   wechat_connect_enabled: true,
   wechat_connect_app_id: "wx-app-id-123",
   wechat_connect_app_secret_configured: true,
@@ -1435,7 +1457,7 @@ describe("admin SettingsView payment visible method controls", () => {
   });
 });
 
-describe("admin SettingsView wechat connect controls", () => {
+describe("admin SettingsView OAuth provider controls", () => {
   beforeEach(() => {
     getSettings.mockReset();
     updateSettings.mockReset();
@@ -1555,6 +1577,100 @@ describe("admin SettingsView wechat connect controls", () => {
           .element as HTMLInputElement
       ).value,
     ).toBe("/auth/wechat/callback");
+  });
+
+  it("loads Feishu OAuth settings and preserves the configured secret", async () => {
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openSecurityTab(wrapper);
+
+    expect(
+      (
+        wrapper.get('[data-testid="feishu-connect-enabled"]')
+          .element as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+    expect(
+      (
+        wrapper.get('[data-testid="feishu-connect-client-id"]')
+          .element as HTMLInputElement
+      ).value,
+    ).toBe("cli_mock_feishu_app");
+    expect(
+      (
+        wrapper.get('[data-testid="feishu-connect-client-secret"]')
+          .element as HTMLInputElement
+      ).value,
+    ).toBe("");
+    expect(
+      wrapper
+        .get('[data-testid="feishu-connect-client-secret"]')
+        .attributes("placeholder"),
+    ).toContain("密钥已配置");
+    expect(
+      (
+        wrapper.get('[data-testid="feishu-connect-redirect-url"]')
+          .element as HTMLInputElement
+      ).value,
+    ).toBe("https://admin.example.com/api/v1/auth/oauth/feishu/callback");
+  });
+
+  it("generates the Feishu backend callback URL from the current site", async () => {
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openSecurityTab(wrapper);
+    await wrapper
+      .get('[data-testid="feishu-connect-generate-redirect-url"]')
+      .trigger("click");
+
+    expect(
+      (
+        wrapper.get('[data-testid="feishu-connect-redirect-url"]')
+          .element as HTMLInputElement
+      ).value,
+    ).toBe(`${window.location.origin}/api/v1/auth/oauth/feishu/callback`);
+  });
+
+  it("saves Feishu OAuth fields and clears the plaintext secret after save", async () => {
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openSecurityTab(wrapper);
+
+    await wrapper
+      .get('[data-testid="feishu-connect-client-id"]')
+      .setValue("cli_mock_feishu_updated");
+    await wrapper
+      .get('[data-testid="feishu-connect-client-secret"]')
+      .setValue("mock-feishu-secret");
+    await wrapper
+      .get('[data-testid="feishu-connect-redirect-url"]')
+      .setValue("https://mock.example.com/api/v1/auth/oauth/feishu/callback");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        feishu_connect_enabled: true,
+        feishu_connect_client_id: "cli_mock_feishu_updated",
+        feishu_connect_client_secret: "mock-feishu-secret",
+        feishu_connect_redirect_url:
+          "https://mock.example.com/api/v1/auth/oauth/feishu/callback",
+      }),
+    );
+    expect(
+      (
+        wrapper.get('[data-testid="feishu-connect-client-secret"]')
+          .element as HTMLInputElement
+      ).value,
+    ).toBe("");
+    expect(
+      wrapper
+        .get('[data-testid="feishu-connect-client-secret"]')
+        .attributes("placeholder"),
+    ).toContain("密钥已配置");
   });
 
   it("links GitHub OAuth Apps guide to GitHub developer settings", async () => {

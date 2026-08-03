@@ -47,6 +47,7 @@ vi.mock('vue-i18n', async (importOriginal) => {
         if (key === 'profile.authBindings.status.notBound') return 'Not bound'
         if (key === 'profile.authBindings.providers.email') return 'Email'
         if (key === 'profile.authBindings.providers.linuxdo') return 'LinuxDo'
+        if (key === 'profile.authBindings.providers.feishu') return 'Mock Feishu'
         if (key === 'profile.authBindings.providers.wechat') return 'WeChat'
         if (key === 'profile.authBindings.providers.oidc') return params?.providerName || 'OIDC'
         if (key === 'profile.authBindings.bindAction') return `Bind ${params?.providerName || ''}`.trim()
@@ -176,6 +177,34 @@ describe('ProfileIdentityBindingsSection', () => {
     expect(locationState.current.href).toContain('redirect=%2Fprofile')
   })
 
+  it('starts the Feishu bind flow for the current profile page', async () => {
+    const wrapper = mount(ProfileIdentityBindingsSection, {
+      global: {
+        plugins: [pinia],
+      },
+      props: {
+        user: createUser({
+          auth_bindings: {
+            feishu: { bound: false, can_bind: true },
+          },
+        }),
+        feishuEnabled: true,
+        linuxdoEnabled: false,
+        oidcEnabled: false,
+        wechatEnabled: false,
+      },
+    })
+
+    expect(wrapper.get('[data-testid="profile-binding-feishu-action"]').text()).toBe(
+      'Bind Mock Feishu'
+    )
+    await wrapper.get('[data-testid="profile-binding-feishu-action"]').trigger('click')
+
+    expect(locationState.current.href).toContain('/api/v1/auth/oauth/feishu/bind/start?')
+    expect(locationState.current.href).toContain('intent=bind_current_user')
+    expect(locationState.current.href).toContain('redirect=%2Fprofile')
+  })
+
   it('hides the WeChat bind action outside the WeChat browser when only mp mode is configured', () => {
     const wrapper = mount(ProfileIdentityBindingsSection, {
       global: {
@@ -258,6 +287,7 @@ describe('ProfileIdentityBindingsSection', () => {
       custom_menu_items: [],
       custom_endpoints: [],
       linuxdo_oauth_enabled: false,
+      feishu_oauth_enabled: false,
       wechat_oauth_enabled: true,
       wechat_oauth_open_enabled: true,
       wechat_oauth_mp_enabled: false,

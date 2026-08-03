@@ -327,6 +327,31 @@ export default {
         retry: '重新登录'
       }
     },
+    feishu: {
+      signIn: '飞书登录',
+      callbackTitle: '正在完成飞书登录',
+      callbackProcessing: '正在验证飞书登录信息，请稍候...',
+      callbackHint: '如果页面未自动跳转，请返回登录页重试。',
+      callbackMissingToken: '登录信息缺失，请返回重试。',
+      backToLogin: '返回登录',
+      completeRegistrationFailed: '注册失败，请检查账户信息后重试。',
+      error: {
+        title: '飞书登录失败',
+        csrf: '登录会话已过期，请重新登录。',
+        feishu_not_enabled: '飞书登录暂未启用',
+        upstream_error: '飞书服务暂时不可用，请稍后重试。',
+        missing_browser_session: '浏览器会话丢失，请重新登录。',
+        missing_params: '请求参数不完整。',
+        invalid_state: '登录状态异常。',
+        missing_verifier: '登录校验信息缺失，请重新登录。',
+        token_exchange_failed: '飞书授权码交换失败，请重试。',
+        userinfo_failed: '获取飞书账户资料失败，请重试。',
+        userinfo_invalid: '飞书账户未返回稳定的身份标识。',
+        provider_error: '飞书授权失败。',
+        session_error: '会话创建失败，请重试。',
+        retry: '重新登录'
+      }
+    },
     emailOAuth: {
       signIn: '使用 {providerName} 登录'
     },
@@ -376,6 +401,8 @@ export default {
     linuxdoCallbackPageTitle: 'LinuxDo 登录回调',
     dingtalkCallbackPageTitle: '钉钉登录回调',
     dingtalkProviderName: '钉钉',
+    feishuProviderName: '飞书',
+    feishuCallbackPageTitle: '飞书登录回调',
     oidcCallbackPageTitle: 'OIDC 登录回调',
     oauthCallbackPageTitle: 'OAuth 回调',
     wechatProviderName: '微信',

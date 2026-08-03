@@ -120,6 +120,16 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/auth/feishu/callback',
+    name: 'FeishuOAuthCallback',
+    component: () => import('@/views/auth/FeishuCallbackView.vue'),
+    meta: {
+      requiresAuth: false,
+      title: 'Feishu OAuth Callback',
+      titleKey: 'auth.feishuCallbackPageTitle'
+    }
+  },
+  {
     path: '/auth/dingtalk/email-completion',
     name: 'dingtalk-email-completion',
     component: () => import('@/views/auth/DingTalkEmailCompletionView.vue'),
@@ -743,6 +753,7 @@ const BACKEND_MODE_CALLBACK_PATHS = [
   '/auth/callback',
   '/auth/linuxdo/callback',
   '/auth/dingtalk/callback',
+  '/auth/feishu/callback',
   '/auth/dingtalk/email-completion',
   '/auth/oidc/callback',
   '/auth/wechat/callback',

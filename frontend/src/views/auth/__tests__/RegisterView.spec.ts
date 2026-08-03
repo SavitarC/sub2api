@@ -17,6 +17,7 @@ const publicSettings = {
   site_name: 'Sub2API',
   registration_email_suffix_whitelist: [],
   linuxdo_oauth_enabled: false,
+  feishu_oauth_enabled: false,
   wechat_oauth_enabled: false,
   oidc_oauth_enabled: false,
   github_oauth_enabled: false,
@@ -67,6 +68,7 @@ function mountRegister() {
         LoginAgreementPrompt: true,
         EmailOAuthButtons: true,
         LinuxDoOAuthSection: true,
+        FeishuOAuthSection: { template: '<button data-testid="mock-feishu-register-entry" />' },
         WechatOAuthSection: true,
         OidcOAuthSection: true,
         RouterLink: true,
@@ -108,5 +110,17 @@ describe('RegisterView invitation layout', () => {
 
     expect(wrapper.find('[data-testid="affiliate-invitation-field"]').exists()).toBe(false)
     expect(wrapper.get('#invitation_code').exists()).toBe(true)
+  })
+
+  it('renders the Feishu registration entry when public settings enable it', async () => {
+    getPublicSettingsMock.mockResolvedValueOnce({
+      ...publicSettings,
+      feishu_oauth_enabled: true
+    })
+
+    const wrapper = mountRegister()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="mock-feishu-register-entry"]').exists()).toBe(true)
   })
 })

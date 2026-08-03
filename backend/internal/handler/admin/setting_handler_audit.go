@@ -161,6 +161,18 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.LinuxDoConnectRedirectURL != after.LinuxDoConnectRedirectURL {
 		changed = append(changed, "linuxdo_connect_redirect_url")
 	}
+	if before.FeishuConnectEnabled != after.FeishuConnectEnabled {
+		changed = append(changed, "feishu_connect_enabled")
+	}
+	if before.FeishuConnectClientID != after.FeishuConnectClientID {
+		changed = append(changed, "feishu_connect_client_id")
+	}
+	if req.FeishuConnectClientSecret != "" {
+		changed = append(changed, "feishu_connect_client_secret")
+	}
+	if before.FeishuConnectRedirectURL != after.FeishuConnectRedirectURL {
+		changed = append(changed, "feishu_connect_redirect_url")
+	}
 	if before.DingTalkConnectEnabled != after.DingTalkConnectEnabled {
 		changed = append(changed, "dingtalk_connect_enabled")
 	}

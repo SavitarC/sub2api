@@ -246,6 +246,14 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 		updates[SettingKeyLinuxDoConnectClientSecret] = settings.LinuxDoConnectClientSecret
 	}
 
+	// Feishu OAuth 登录
+	updates[SettingKeyFeishuConnectEnabled] = strconv.FormatBool(settings.FeishuConnectEnabled)
+	updates[SettingKeyFeishuConnectClientID] = settings.FeishuConnectClientID
+	updates[SettingKeyFeishuConnectRedirectURL] = settings.FeishuConnectRedirectURL
+	if settings.FeishuConnectClientSecret != "" {
+		updates[SettingKeyFeishuConnectClientSecret] = settings.FeishuConnectClientSecret
+	}
+
 	// DingTalk Connect OAuth 登录
 	updates[SettingKeyDingTalkConnectEnabled] = strconv.FormatBool(settings.DingTalkConnectEnabled)
 	updates[SettingKeyDingTalkConnectClientID] = settings.DingTalkConnectClientID

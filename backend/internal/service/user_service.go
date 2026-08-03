@@ -219,6 +219,7 @@ type UserIdentitySummary struct {
 type UserIdentitySummarySet struct {
 	Email    UserIdentitySummary `json:"email"`
 	LinuxDo  UserIdentitySummary `json:"linuxdo"`
+	Feishu   UserIdentitySummary `json:"feishu"`
 	OIDC     UserIdentitySummary `json:"oidc"`
 	WeChat   UserIdentitySummary `json:"wechat"`
 	DingTalk UserIdentitySummary `json:"dingtalk"`
@@ -339,6 +340,7 @@ func (s *UserService) GetProfileIdentitySummaries(ctx context.Context, userID in
 	summaries := UserIdentitySummarySet{
 		Email:    s.buildEmailIdentitySummary(user, records),
 		LinuxDo:  s.buildProviderIdentitySummary("linuxdo", user, records),
+		Feishu:   s.buildProviderIdentitySummary("feishu", user, records),
 		OIDC:     s.buildProviderIdentitySummary("oidc", user, records),
 		WeChat:   s.buildProviderIdentitySummary("wechat", user, records),
 		DingTalk: s.buildProviderIdentitySummary("dingtalk", user, records),
@@ -355,6 +357,7 @@ func (s *UserService) applyExplicitProviderAvailability(ctx context.Context, sum
 
 	settings, err := s.settingRepo.GetMultiple(ctx, []string{
 		SettingKeyLinuxDoConnectEnabled,
+		SettingKeyFeishuConnectEnabled,
 		SettingKeyOIDCConnectEnabled,
 		SettingKeyWeChatConnectEnabled,
 		SettingKeyWeChatConnectOpenEnabled,
@@ -369,6 +372,9 @@ func (s *UserService) applyExplicitProviderAvailability(ctx context.Context, sum
 
 	if raw, ok := settings[SettingKeyLinuxDoConnectEnabled]; ok && strings.TrimSpace(raw) != "" && raw != "true" {
 		disableIdentityBindAction(&summaries.LinuxDo)
+	}
+	if raw, ok := settings[SettingKeyFeishuConnectEnabled]; ok && strings.TrimSpace(raw) != "" && raw != "true" {
+		disableIdentityBindAction(&summaries.Feishu)
 	}
 	if raw, ok := settings[SettingKeyDingTalkConnectEnabled]; ok && strings.TrimSpace(raw) != "" && raw != "true" {
 		disableIdentityBindAction(&summaries.DingTalk)
@@ -787,7 +793,7 @@ func (s *UserService) canUnbindProvider(provider string, user *User, records []U
 		return true
 	}
 
-	for _, candidate := range []string{"linuxdo", "oidc", "wechat", "dingtalk"} {
+	for _, candidate := range []string{"linuxdo", "feishu", "oidc", "wechat", "dingtalk"} {
 		if candidate == provider {
 			continue
 		}
@@ -859,6 +865,8 @@ func buildUserIdentityBindAuthorizeURL(provider, redirectTo string) (string, err
 	switch provider {
 	case "linuxdo":
 		path = "/api/v1/auth/oauth/linuxdo/bind/start"
+	case "feishu":
+		path = "/api/v1/auth/oauth/feishu/bind/start"
 	case "oidc":
 		path = "/api/v1/auth/oauth/oidc/bind/start"
 	case "wechat":
@@ -879,6 +887,8 @@ func normalizeUserIdentityProvider(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "linuxdo":
 		return "linuxdo"
+	case "feishu":
+		return "feishu"
 	case "oidc":
 		return "oidc"
 	case "wechat":

@@ -557,6 +557,54 @@ func (s *SettingService) GetLinuxDoConnectOAuthConfig(ctx context.Context) (conf
 	return effective, nil
 }
 
+// GetFeishuConnectOAuthConfig returns the effective Feishu OAuth config. Values
+// explicitly stored in system settings override config.yaml/environment values.
+func (s *SettingService) GetFeishuConnectOAuthConfig(ctx context.Context) (config.FeishuConnectConfig, error) {
+	if s == nil || s.cfg == nil {
+		return config.FeishuConnectConfig{}, infraerrors.ServiceUnavailable("CONFIG_NOT_READY", "config not loaded")
+	}
+	effective := s.cfg.Feishu
+	settings, err := s.settingRepo.GetMultiple(ctx, []string{
+		SettingKeyFeishuConnectEnabled,
+		SettingKeyFeishuConnectClientID,
+		SettingKeyFeishuConnectClientSecret,
+		SettingKeyFeishuConnectRedirectURL,
+	})
+	if err != nil {
+		return config.FeishuConnectConfig{}, fmt.Errorf("get feishu connect settings: %w", err)
+	}
+	if raw, ok := settings[SettingKeyFeishuConnectEnabled]; ok {
+		effective.Enabled = raw == "true"
+	}
+	if raw := strings.TrimSpace(settings[SettingKeyFeishuConnectClientID]); raw != "" {
+		effective.ClientID = raw
+	}
+	if raw := strings.TrimSpace(settings[SettingKeyFeishuConnectClientSecret]); raw != "" {
+		effective.ClientSecret = raw
+	}
+	if raw := strings.TrimSpace(settings[SettingKeyFeishuConnectRedirectURL]); raw != "" {
+		effective.RedirectURL = raw
+	}
+	if !effective.Enabled {
+		return config.FeishuConnectConfig{}, infraerrors.NotFound("OAUTH_DISABLED", "oauth login is disabled")
+	}
+	if strings.TrimSpace(effective.ClientID) == "" || strings.TrimSpace(effective.ClientSecret) == "" {
+		return config.FeishuConnectConfig{}, infraerrors.InternalServer("OAUTH_CONFIG_INVALID", "oauth client credentials not configured")
+	}
+	if strings.TrimSpace(effective.RedirectURL) == "" || strings.TrimSpace(effective.FrontendRedirectURL) == "" {
+		return config.FeishuConnectConfig{}, infraerrors.InternalServer("OAUTH_CONFIG_INVALID", "oauth redirect url not configured")
+	}
+	for _, raw := range []string{effective.AuthorizeURL, effective.TokenURL, effective.UserInfoURL, effective.RedirectURL} {
+		if err := config.ValidateAbsoluteHTTPURL(raw); err != nil {
+			return config.FeishuConnectConfig{}, infraerrors.InternalServer("OAUTH_CONFIG_INVALID", "oauth endpoint url invalid")
+		}
+	}
+	if err := config.ValidateFrontendRedirectURL(effective.FrontendRedirectURL); err != nil {
+		return config.FeishuConnectConfig{}, infraerrors.InternalServer("OAUTH_CONFIG_INVALID", "oauth frontend redirect url invalid")
+	}
+	return effective, nil
+}
+
 // GetDingTalkConnectOAuthConfig 返回用于登录的"最终生效" DingTalk Connect 配置。
 //
 // 优先级：

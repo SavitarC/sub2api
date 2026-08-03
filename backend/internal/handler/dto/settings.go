@@ -79,6 +79,11 @@ type SystemSettings struct {
 	LinuxDoConnectClientSecretConfigured bool   `json:"linuxdo_connect_client_secret_configured"`
 	LinuxDoConnectRedirectURL            string `json:"linuxdo_connect_redirect_url"`
 
+	FeishuConnectEnabled                bool   `json:"feishu_connect_enabled"`
+	FeishuConnectClientID               string `json:"feishu_connect_client_id"`
+	FeishuConnectClientSecretConfigured bool   `json:"feishu_connect_client_secret_configured"`
+	FeishuConnectRedirectURL            string `json:"feishu_connect_redirect_url"`
+
 	DingTalkConnectEnabled                 bool   `json:"dingtalk_connect_enabled"`
 	DingTalkConnectClientID                string `json:"dingtalk_connect_client_id"`
 	DingTalkConnectClientSecretConfigured  bool   `json:"dingtalk_connect_client_secret_configured"`
@@ -377,6 +382,7 @@ type PublicSettings struct {
 	CustomEndpoints                  []CustomEndpoint         `json:"custom_endpoints"`
 	DingTalkOAuthEnabled             bool                     `json:"dingtalk_oauth_enabled"`
 	LinuxDoOAuthEnabled              bool                     `json:"linuxdo_oauth_enabled"`
+	FeishuOAuthEnabled               bool                     `json:"feishu_oauth_enabled"`
 	WeChatOAuthEnabled               bool                     `json:"wechat_oauth_enabled"`
 	WeChatOAuthOpenEnabled           bool                     `json:"wechat_oauth_open_enabled"`
 	WeChatOAuthMPEnabled             bool                     `json:"wechat_oauth_mp_enabled"`

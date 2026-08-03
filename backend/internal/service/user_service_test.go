@@ -914,3 +914,9 @@ func TestGetProfile_HydratesAvatarFromRepository(t *testing.T) {
 	require.Equal(t, "https://cdn.example.com/profile.png", user.AvatarURL)
 	require.Equal(t, "remote_url", user.AvatarSource)
 }
+
+func TestBuildUserIdentityBindAuthorizeURL_Feishu(t *testing.T) {
+	got, err := buildUserIdentityBindAuthorizeURL(" Feishu ", "/settings/profile")
+	require.NoError(t, err)
+	require.Equal(t, "/api/v1/auth/oauth/feishu/bind/start?intent=bind_current_user&redirect=%2Fsettings%2Fprofile", got)
+}

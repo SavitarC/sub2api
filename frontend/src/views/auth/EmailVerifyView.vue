@@ -493,6 +493,8 @@ function resolvePendingOAuthCallbackRoute(provider: string): string {
       return '/auth/oidc/callback'
     case 'wechat':
       return '/auth/wechat/callback'
+    case 'feishu':
+      return '/auth/feishu/callback'
     default:
       return '/auth/callback'
   }

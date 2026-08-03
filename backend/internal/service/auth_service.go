@@ -1179,6 +1179,8 @@ func inferLegacySignupSource(email string) string {
 	switch {
 	case strings.HasSuffix(normalized, DingTalkConnectSyntheticEmailDomain):
 		return "dingtalk"
+	case strings.HasSuffix(normalized, FeishuConnectSyntheticEmailDomain):
+		return "feishu"
 	case strings.HasSuffix(normalized, LinuxDoConnectSyntheticEmailDomain):
 		return "linuxdo"
 	case strings.HasSuffix(normalized, OIDCConnectSyntheticEmailDomain):
@@ -1274,7 +1276,8 @@ func isReservedEmail(email string) bool {
 	return strings.HasSuffix(normalized, LinuxDoConnectSyntheticEmailDomain) ||
 		strings.HasSuffix(normalized, OIDCConnectSyntheticEmailDomain) ||
 		strings.HasSuffix(normalized, WeChatConnectSyntheticEmailDomain) ||
-		strings.HasSuffix(normalized, DingTalkConnectSyntheticEmailDomain)
+		strings.HasSuffix(normalized, DingTalkConnectSyntheticEmailDomain) ||
+		strings.HasSuffix(normalized, FeishuConnectSyntheticEmailDomain)
 }
 
 // GenerateToken 生成JWT access token

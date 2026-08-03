@@ -80,6 +80,12 @@ type UpdateSettingsRequest struct {
 	LinuxDoConnectClientSecret string `json:"linuxdo_connect_client_secret"`
 	LinuxDoConnectRedirectURL  string `json:"linuxdo_connect_redirect_url"`
 
+	// Feishu OAuth 登录
+	FeishuConnectEnabled      bool   `json:"feishu_connect_enabled"`
+	FeishuConnectClientID     string `json:"feishu_connect_client_id"`
+	FeishuConnectClientSecret string `json:"feishu_connect_client_secret"`
+	FeishuConnectRedirectURL  string `json:"feishu_connect_redirect_url"`
+
 	// DingTalk Connect OAuth 登录
 	DingTalkConnectEnabled                 bool   `json:"dingtalk_connect_enabled"`
 	DingTalkConnectClientID                string `json:"dingtalk_connect_client_id"`
@@ -834,6 +840,32 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
+	// Feishu OAuth 参数验证
+	if req.FeishuConnectEnabled {
+		req.FeishuConnectClientID = strings.TrimSpace(req.FeishuConnectClientID)
+		req.FeishuConnectClientSecret = strings.TrimSpace(req.FeishuConnectClientSecret)
+		req.FeishuConnectRedirectURL = strings.TrimSpace(req.FeishuConnectRedirectURL)
+		if req.FeishuConnectClientID == "" {
+			response.BadRequest(c, "Feishu Client ID is required when enabled")
+			return
+		}
+		if req.FeishuConnectRedirectURL == "" {
+			response.BadRequest(c, "Feishu Redirect URL is required when enabled")
+			return
+		}
+		if err := config.ValidateAbsoluteHTTPURL(req.FeishuConnectRedirectURL); err != nil {
+			response.BadRequest(c, "Feishu Redirect URL must be an absolute http(s) URL")
+			return
+		}
+		if req.FeishuConnectClientSecret == "" {
+			if previousSettings.FeishuConnectClientSecret == "" {
+				response.BadRequest(c, "Feishu Client Secret is required when enabled")
+				return
+			}
+			req.FeishuConnectClientSecret = previousSettings.FeishuConnectClientSecret
+		}
+	}
+
 	// DingTalk Connect 参数验证
 	// 防御性：任何写入路径上把已废弃的 corp_restriction_policy=whitelist 入参 coerce 为 none，
 	// 避免任何直连 admin API 的客户端把死值写回 DB（前端 UI 已无此选项）。
@@ -1527,6 +1559,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		LinuxDoConnectClientID:                 req.LinuxDoConnectClientID,
 		LinuxDoConnectClientSecret:             req.LinuxDoConnectClientSecret,
 		LinuxDoConnectRedirectURL:              req.LinuxDoConnectRedirectURL,
+		FeishuConnectEnabled:                   req.FeishuConnectEnabled,
+		FeishuConnectClientID:                  req.FeishuConnectClientID,
+		FeishuConnectClientSecret:              req.FeishuConnectClientSecret,
+		FeishuConnectRedirectURL:               req.FeishuConnectRedirectURL,
 		DingTalkConnectEnabled:                 req.DingTalkConnectEnabled,
 		DingTalkConnectClientID:                req.DingTalkConnectClientID,
 		DingTalkConnectClientSecret:            req.DingTalkConnectClientSecret,
@@ -2106,6 +2142,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		LinuxDoConnectClientID:                                 updatedSettings.LinuxDoConnectClientID,
 		LinuxDoConnectClientSecretConfigured:                   updatedSettings.LinuxDoConnectClientSecretConfigured,
 		LinuxDoConnectRedirectURL:                              updatedSettings.LinuxDoConnectRedirectURL,
+		FeishuConnectEnabled:                                   updatedSettings.FeishuConnectEnabled,
+		FeishuConnectClientID:                                  updatedSettings.FeishuConnectClientID,
+		FeishuConnectClientSecretConfigured:                    updatedSettings.FeishuConnectClientSecretConfigured,
+		FeishuConnectRedirectURL:                               updatedSettings.FeishuConnectRedirectURL,
 		DingTalkConnectEnabled:                                 updatedSettings.DingTalkConnectEnabled,
 		DingTalkConnectClientID:                                updatedSettings.DingTalkConnectClientID,
 		DingTalkConnectClientSecretConfigured:                  updatedSettings.DingTalkConnectClientSecretConfigured,

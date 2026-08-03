@@ -76,6 +76,14 @@ func RegisterAuthRoutes(
 		auth.POST("/oauth/linuxdo/start", rateLimiter.LimitWithOptions("oauth-linuxdo-start", 20, time.Minute, middleware.RateLimitOptions{
 			FailureMode: middleware.RateLimitFailClose,
 		}), h.Auth.LinuxDoOAuthStart)
+		auth.GET("/oauth/feishu/start", h.Auth.FeishuOAuthStart)
+		auth.GET("/oauth/feishu/bind/start", func(c *gin.Context) {
+			query := c.Request.URL.Query()
+			query.Set("intent", "bind_current_user")
+			c.Request.URL.RawQuery = query.Encode()
+			h.Auth.FeishuOAuthStart(c)
+		})
+		auth.GET("/oauth/feishu/callback", h.Auth.FeishuOAuthCallback)
 		auth.GET("/oauth/github/start", h.Auth.GitHubOAuthStart)
 		auth.POST("/oauth/github/start", rateLimiter.LimitWithOptions("oauth-github-start", 20, time.Minute, middleware.RateLimitOptions{
 			FailureMode: middleware.RateLimitFailClose,

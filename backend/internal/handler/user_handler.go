@@ -96,6 +96,7 @@ type userProfileResponse struct {
 	IdentityBindings  map[string]service.UserIdentitySummary `json:"identity_bindings"`
 	EmailBound        bool                                   `json:"email_bound"`
 	LinuxDoBound      bool                                   `json:"linuxdo_bound"`
+	FeishuBound       bool                                   `json:"feishu_bound"`
 	OIDCBound         bool                                   `json:"oidc_bound"`
 	WeChatBound       bool                                   `json:"wechat_bound"`
 	DingTalkBound     bool                                   `json:"dingtalk_bound"`
@@ -558,6 +559,7 @@ func userProfileResponseFromService(user *service.User, identities service.UserI
 		IdentityBindings:  bindings,
 		EmailBound:        identities.Email.Bound,
 		LinuxDoBound:      identities.LinuxDo.Bound,
+		FeishuBound:       identities.Feishu.Bound,
 		OIDCBound:         identities.OIDC.Bound,
 		WeChatBound:       identities.WeChat.Bound,
 		DingTalkBound:     identities.DingTalk.Bound,
@@ -568,6 +570,7 @@ func userProfileBindingMap(identities service.UserIdentitySummarySet) map[string
 	return map[string]service.UserIdentitySummary{
 		"email":    identities.Email,
 		"linuxdo":  identities.LinuxDo,
+		"feishu":   identities.Feishu,
 		"oidc":     identities.OIDC,
 		"wechat":   identities.WeChat,
 		"dingtalk": identities.DingTalk,
@@ -618,8 +621,8 @@ func inferUserProfileSources(user *service.User, identities service.UserIdentity
 }
 
 func thirdPartyIdentityProviders(identities service.UserIdentitySummarySet) []service.UserIdentitySummary {
-	out := make([]service.UserIdentitySummary, 0, 3)
-	for _, summary := range []service.UserIdentitySummary{identities.LinuxDo, identities.OIDC, identities.WeChat, identities.DingTalk} {
+	out := make([]service.UserIdentitySummary, 0, 5)
+	for _, summary := range []service.UserIdentitySummary{identities.LinuxDo, identities.Feishu, identities.OIDC, identities.WeChat, identities.DingTalk} {
 		if summary.Bound {
 			out = append(out, summary)
 		}

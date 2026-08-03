@@ -270,6 +270,26 @@ export default {
         quickSetCopy: 'Generate & Copy (current site)',
         redirectUrlSetAndCopied: 'Redirect URL generated and copied to clipboard'
       },
+      feishu: {
+        title: 'Feishu Login',
+        description: 'Configure Feishu OAuth for Sub2API end-user login',
+        enable: 'Enable Feishu Login',
+        enableHint: 'Show Feishu login on the login/register pages',
+        clientId: 'App ID',
+        clientIdPlaceholder: 'e.g., cli_xxxxxxxxxxxxxxxx',
+        clientIdHint: 'Get this from the Feishu Open Platform app credentials page',
+        clientSecret: 'App Secret',
+        clientSecretPlaceholder: '********',
+        clientSecretHint: 'Used by the backend to exchange user access tokens (keep it secret)',
+        clientSecretConfiguredPlaceholder: '********',
+        clientSecretConfiguredHint: 'Secret configured. Leave empty to keep the current value.',
+        redirectUrl: 'Redirect URL',
+        redirectUrlPlaceholder: 'https://your-domain.com/api/v1/auth/oauth/feishu/callback',
+        redirectUrlHint:
+          'Must match the redirect URL in the Feishu Open Platform app security settings (must be an absolute http(s) URL)',
+        quickSetCopy: 'Generate & Copy (current site)',
+        redirectUrlSetAndCopied: 'Redirect URL generated and copied to clipboard'
+      },
       dingtalk: {
         title: 'DingTalk Login',
         description: 'Configure DingTalk OAuth for Sub2API end-user login',

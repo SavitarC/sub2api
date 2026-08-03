@@ -328,6 +328,31 @@ export default {
         retry: 'Retry Login'
       }
     },
+    feishu: {
+      signIn: 'Continue with Feishu',
+      callbackTitle: 'Signing you in with Feishu',
+      callbackProcessing: 'Completing Feishu login, please wait...',
+      callbackHint: 'If you are not redirected automatically, go back to the login page and try again.',
+      callbackMissingToken: 'Missing login token, please try again.',
+      backToLogin: 'Back to Login',
+      completeRegistrationFailed: 'Registration failed. Please check the account details and try again.',
+      error: {
+        title: 'Feishu Sign-in Failed',
+        csrf: 'Login session expired. Please try again.',
+        feishu_not_enabled: 'Feishu login is not enabled',
+        upstream_error: 'Feishu is temporarily unavailable. Please try again later.',
+        missing_browser_session: 'Browser session lost. Please login again.',
+        missing_params: 'Request parameters are incomplete.',
+        invalid_state: 'Invalid login state.',
+        missing_verifier: 'Login verification information is missing. Please try again.',
+        token_exchange_failed: 'Failed to exchange the Feishu authorization code. Please try again.',
+        userinfo_failed: 'Failed to load your Feishu profile. Please try again.',
+        userinfo_invalid: 'The Feishu account did not provide a stable identity.',
+        provider_error: 'Feishu authorization failed.',
+        session_error: 'Failed to create a login session. Please retry.',
+        retry: 'Retry Login'
+      }
+    },
     emailOAuth: {
       signIn: 'Continue with {providerName}'
     },
@@ -378,6 +403,8 @@ export default {
     linuxdoCallbackPageTitle: 'LinuxDo Sign-In Callback',
     dingtalkCallbackPageTitle: 'DingTalk Sign-In Callback',
     dingtalkProviderName: 'DingTalk',
+    feishuProviderName: 'Feishu',
+    feishuCallbackPageTitle: 'Feishu Sign-In Callback',
     oidcCallbackPageTitle: 'OIDC Sign-In Callback',
     oauthCallbackPageTitle: 'OAuth Callback',
     wechatProviderName: 'WeChat',

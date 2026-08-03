@@ -75,6 +75,7 @@ type Config struct {
 	Totp                    TotpConfig                    `mapstructure:"totp"`
 	WebAuthn                WebAuthnConfig                `mapstructure:"webauthn"`
 	LinuxDo                 LinuxDoConnectConfig          `mapstructure:"linuxdo_connect"`
+	Feishu                  FeishuConnectConfig           `mapstructure:"feishu_connect"`
 	WeChat                  WeChatConnectConfig           `mapstructure:"wechat_connect"`
 	OIDC                    OIDCConnectConfig             `mapstructure:"oidc_connect"`
 	DingTalk                DingTalkConnectConfig         `mapstructure:"dingtalk_connect"`
@@ -292,6 +293,19 @@ type LinuxDoConnectConfig struct {
 	UserInfoEmailPath    string `mapstructure:"userinfo_email_path"`
 	UserInfoIDPath       string `mapstructure:"userinfo_id_path"`
 	UserInfoUsernamePath string `mapstructure:"userinfo_username_path"`
+}
+
+type FeishuConnectConfig struct {
+	Enabled             bool   `mapstructure:"enabled"`
+	ClientID            string `mapstructure:"client_id"`
+	ClientSecret        string `mapstructure:"client_secret"`
+	AuthorizeURL        string `mapstructure:"authorize_url"`
+	TokenURL            string `mapstructure:"token_url"`
+	UserInfoURL         string `mapstructure:"userinfo_url"`
+	Scopes              string `mapstructure:"scopes"`
+	RedirectURL         string `mapstructure:"redirect_url"`
+	FrontendRedirectURL string `mapstructure:"frontend_redirect_url"`
+	UsePKCE             bool   `mapstructure:"use_pkce"`
 }
 
 type WeChatConnectConfig struct {
@@ -1731,6 +1745,14 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.LinuxDo.UserInfoEmailPath = strings.TrimSpace(cfg.LinuxDo.UserInfoEmailPath)
 	cfg.LinuxDo.UserInfoIDPath = strings.TrimSpace(cfg.LinuxDo.UserInfoIDPath)
 	cfg.LinuxDo.UserInfoUsernamePath = strings.TrimSpace(cfg.LinuxDo.UserInfoUsernamePath)
+	cfg.Feishu.ClientID = strings.TrimSpace(cfg.Feishu.ClientID)
+	cfg.Feishu.ClientSecret = strings.TrimSpace(cfg.Feishu.ClientSecret)
+	cfg.Feishu.AuthorizeURL = strings.TrimSpace(cfg.Feishu.AuthorizeURL)
+	cfg.Feishu.TokenURL = strings.TrimSpace(cfg.Feishu.TokenURL)
+	cfg.Feishu.UserInfoURL = strings.TrimSpace(cfg.Feishu.UserInfoURL)
+	cfg.Feishu.Scopes = strings.TrimSpace(cfg.Feishu.Scopes)
+	cfg.Feishu.RedirectURL = strings.TrimSpace(cfg.Feishu.RedirectURL)
+	cfg.Feishu.FrontendRedirectURL = strings.TrimSpace(cfg.Feishu.FrontendRedirectURL)
 	applyLegacyWeChatConnectEnvCompatibility(&cfg.WeChat)
 	normalizeWeChatConnectConfig(&cfg.WeChat)
 	cfg.OIDC.ProviderName = strings.TrimSpace(cfg.OIDC.ProviderName)
@@ -1972,6 +1994,18 @@ func setDefaults() {
 	viper.SetDefault("linuxdo_connect.userinfo_email_path", "")
 	viper.SetDefault("linuxdo_connect.userinfo_id_path", "")
 	viper.SetDefault("linuxdo_connect.userinfo_username_path", "")
+
+	// Feishu OAuth 登录
+	viper.SetDefault("feishu_connect.enabled", false)
+	viper.SetDefault("feishu_connect.client_id", "")
+	viper.SetDefault("feishu_connect.client_secret", "")
+	viper.SetDefault("feishu_connect.authorize_url", "https://accounts.feishu.cn/open-apis/authen/v1/authorize")
+	viper.SetDefault("feishu_connect.token_url", "https://accounts.feishu.cn/oauth/v3/token")
+	viper.SetDefault("feishu_connect.userinfo_url", "https://open.feishu.cn/open-apis/authen/v1/user_info")
+	viper.SetDefault("feishu_connect.scopes", "")
+	viper.SetDefault("feishu_connect.redirect_url", "")
+	viper.SetDefault("feishu_connect.frontend_redirect_url", "/auth/feishu/callback")
+	viper.SetDefault("feishu_connect.use_pkce", true)
 
 	// WeChat Connect OAuth 登录
 	viper.SetDefault("wechat_connect.enabled", false)
@@ -2751,6 +2785,38 @@ func (c *Config) Validate() error {
 		warnIfInsecureURL("linuxdo_connect.userinfo_url", c.LinuxDo.UserInfoURL)
 		warnIfInsecureURL("linuxdo_connect.redirect_url", c.LinuxDo.RedirectURL)
 		warnIfInsecureURL("linuxdo_connect.frontend_redirect_url", c.LinuxDo.FrontendRedirectURL)
+	}
+	if c.Feishu.Enabled {
+		if strings.TrimSpace(c.Feishu.ClientID) == "" {
+			return fmt.Errorf("feishu_connect.client_id is required when feishu_connect.enabled=true")
+		}
+		if strings.TrimSpace(c.Feishu.ClientSecret) == "" {
+			return fmt.Errorf("feishu_connect.client_secret is required when feishu_connect.enabled=true")
+		}
+		if strings.TrimSpace(c.Feishu.RedirectURL) == "" {
+			return fmt.Errorf("feishu_connect.redirect_url is required when feishu_connect.enabled=true")
+		}
+		if strings.TrimSpace(c.Feishu.FrontendRedirectURL) == "" {
+			return fmt.Errorf("feishu_connect.frontend_redirect_url is required when feishu_connect.enabled=true")
+		}
+		for key, raw := range map[string]string{
+			"authorize_url": c.Feishu.AuthorizeURL,
+			"token_url":     c.Feishu.TokenURL,
+			"userinfo_url":  c.Feishu.UserInfoURL,
+			"redirect_url":  c.Feishu.RedirectURL,
+		} {
+			if err := ValidateAbsoluteHTTPURL(raw); err != nil {
+				return fmt.Errorf("feishu_connect.%s invalid: %w", key, err)
+			}
+		}
+		if err := ValidateFrontendRedirectURL(c.Feishu.FrontendRedirectURL); err != nil {
+			return fmt.Errorf("feishu_connect.frontend_redirect_url invalid: %w", err)
+		}
+		warnIfInsecureURL("feishu_connect.authorize_url", c.Feishu.AuthorizeURL)
+		warnIfInsecureURL("feishu_connect.token_url", c.Feishu.TokenURL)
+		warnIfInsecureURL("feishu_connect.userinfo_url", c.Feishu.UserInfoURL)
+		warnIfInsecureURL("feishu_connect.redirect_url", c.Feishu.RedirectURL)
+		warnIfInsecureURL("feishu_connect.frontend_redirect_url", c.Feishu.FrontendRedirectURL)
 	}
 	if c.WeChat.Enabled {
 		weChat := c.WeChat

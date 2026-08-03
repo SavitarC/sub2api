@@ -1511,6 +1511,12 @@ func clearOAuthLogoutCookies(c *gin.Context) {
 	clearCookie(c, linuxDoOAuthIntentCookieName, secureCookie)
 	clearCookie(c, linuxDoOAuthBindUserCookieName, secureCookie)
 
+	clearFeishuOAuthCookie(c, feishuOAuthStateCookieName, secureCookie)
+	clearFeishuOAuthCookie(c, feishuOAuthVerifierCookieName, secureCookie)
+	clearFeishuOAuthCookie(c, feishuOAuthRedirectCookieName, secureCookie)
+	clearFeishuOAuthCookie(c, feishuOAuthIntentCookieName, secureCookie)
+	clearFeishuOAuthCookie(c, feishuOAuthBindUserCookieName, secureCookie)
+
 	oidcClearCookie(c, oidcOAuthStateCookieName, secureCookie)
 	oidcClearCookie(c, oidcOAuthVerifierCookie, secureCookie)
 	oidcClearCookie(c, oidcOAuthRedirectCookie, secureCookie)

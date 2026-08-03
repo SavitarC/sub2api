@@ -68,6 +68,13 @@ type SystemSettings struct {
 	LinuxDoConnectClientSecretConfigured bool
 	LinuxDoConnectRedirectURL            string
 
+	// Feishu OAuth 登录
+	FeishuConnectEnabled                bool
+	FeishuConnectClientID               string
+	FeishuConnectClientSecret           string
+	FeishuConnectClientSecretConfigured bool
+	FeishuConnectRedirectURL            string
+
 	// DingTalk Connect OAuth 登录
 	DingTalkConnectEnabled                 bool
 	DingTalkConnectClientID                string
@@ -343,6 +350,7 @@ type PublicSettings struct {
 	CustomEndpoints             string // JSON array of custom endpoints
 
 	LinuxDoOAuthEnabled      bool
+	FeishuOAuthEnabled       bool
 	DingTalkOAuthEnabled     bool
 	WeChatOAuthEnabled       bool
 	WeChatOAuthOpenEnabled   bool

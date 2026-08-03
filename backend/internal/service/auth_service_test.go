@@ -11,3 +11,9 @@ func TestIsReservedEmail_DingTalkDomain(t *testing.T) {
 	require.True(t, isReservedEmail("DINGTALK-456@DINGTALK-CONNECT.INVALID")) // case-insensitive
 	require.False(t, isReservedEmail("real@dingtalk.com"))
 }
+
+func TestIsReservedEmail_FeishuDomain(t *testing.T) {
+	require.True(t, isReservedEmail("feishu-user@feishu-connect.invalid"))
+	require.True(t, isReservedEmail("FEISHU-USER@FEISHU-CONNECT.INVALID"))
+	require.Equal(t, "feishu", inferLegacySignupSource("feishu-user@feishu-connect.invalid"))
+}

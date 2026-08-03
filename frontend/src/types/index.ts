@@ -34,7 +34,15 @@ export interface NotifyEmailEntry {
 
 // ==================== User & Auth Types ====================
 
-export type UserAuthProvider = 'email' | 'linuxdo' | 'oidc' | 'wechat' | 'github' | 'google' | 'dingtalk'
+export type UserAuthProvider =
+  | 'email'
+  | 'linuxdo'
+  | 'oidc'
+  | 'wechat'
+  | 'github'
+  | 'google'
+  | 'dingtalk'
+  | 'feishu'
 
 export interface UserAuthBindingStatus {
   bound?: boolean
@@ -84,6 +92,7 @@ export interface User {
   linuxdo_bound?: boolean
   oidc_bound?: boolean
   wechat_bound?: boolean
+  feishu_bound?: boolean
   role: 'admin' | 'user' // User role for authorization
   balance: number // User balance for API usage
   frozen_balance?: number // Balance currently held by async batch jobs
@@ -244,6 +253,7 @@ export interface PublicSettings {
   custom_endpoints: CustomEndpoint[]
   linuxdo_oauth_enabled: boolean
   dingtalk_oauth_enabled?: boolean
+  feishu_oauth_enabled: boolean
   wechat_oauth_enabled: boolean
   wechat_oauth_open_enabled?: boolean
   wechat_oauth_mp_enabled?: boolean

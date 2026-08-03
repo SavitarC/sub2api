@@ -77,6 +77,7 @@ function buildPublicSettings(overrides: Partial<WeChatPublicSettings> = {}): WeC
     custom_menu_items: [],
     custom_endpoints: [],
     linuxdo_oauth_enabled: false,
+    feishu_oauth_enabled: false,
     wechat_oauth_enabled: true,
     oidc_oauth_enabled: false,
     oidc_oauth_provider_name: 'OIDC',

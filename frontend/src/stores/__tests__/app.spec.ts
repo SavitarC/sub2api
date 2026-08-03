@@ -42,6 +42,7 @@ function createPublicSettings(overrides: Partial<PublicSettings> = {}): PublicSe
     custom_menu_items: [],
     custom_endpoints: [],
     linuxdo_oauth_enabled: false,
+    feishu_oauth_enabled: false,
     wechat_oauth_enabled: false,
     oidc_oauth_enabled: false,
     oidc_oauth_provider_name: 'OIDC',
@@ -462,6 +463,7 @@ describe('useAppStore', () => {
         custom_menu_items: [],
         custom_endpoints: [],
         linuxdo_oauth_enabled: false,
+        feishu_oauth_enabled: false,
         backend_mode_enabled: false,
         version: '1.0.0'
       })

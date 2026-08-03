@@ -268,6 +268,25 @@ export default {
         quickSetCopy: '使用当前站点生成并复制',
         redirectUrlSetAndCopied: '已使用当前站点生成回调地址并复制到剪贴板'
       },
+      feishu: {
+        title: '飞书登录',
+        description: '配置飞书 OAuth，用于 Sub2API 用户登录',
+        enable: '启用飞书登录',
+        enableHint: '在登录/注册页面显示飞书登录入口',
+        clientId: 'App ID',
+        clientIdPlaceholder: '例如：cli_xxxxxxxxxxxxxxxx',
+        clientIdHint: '从飞书开放平台应用凭证页获取',
+        clientSecret: 'App Secret',
+        clientSecretPlaceholder: '********',
+        clientSecretHint: '用于后端交换用户访问凭证（请保密）',
+        clientSecretConfiguredPlaceholder: '********',
+        clientSecretConfiguredHint: '密钥已配置，留空以保留当前值。',
+        redirectUrl: '回调地址（Redirect URL）',
+        redirectUrlPlaceholder: 'https://your-domain.com/api/v1/auth/oauth/feishu/callback',
+        redirectUrlHint: '需与飞书开放平台应用安全设置中的重定向 URL 一致（必须是 http(s) 完整 URL）',
+        quickSetCopy: '使用当前站点生成并复制',
+        redirectUrlSetAndCopied: '已使用当前站点生成回调地址并复制到剪贴板'
+      },
       dingtalk: {
         title: '钉钉登录',
         description: '配置钉钉 OAuth，用于 Sub2API 用户登录',

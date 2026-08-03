@@ -125,6 +125,9 @@ const WeChatConnectSyntheticEmailDomain = "@wechat-connect.invalid"
 // DingTalkConnectSyntheticEmailDomain 是 DingTalk Connect 用户的合成邮箱后缀（RFC 保留域名）。
 const DingTalkConnectSyntheticEmailDomain = "@dingtalk-connect.invalid"
 
+// FeishuConnectSyntheticEmailDomain is reserved for stable local placeholders.
+const FeishuConnectSyntheticEmailDomain = "@feishu-connect.invalid"
+
 // Setting keys
 const (
 	// 注册设置
@@ -206,6 +209,12 @@ const (
 	SettingKeyLinuxDoConnectClientID     = "linuxdo_connect_client_id"
 	SettingKeyLinuxDoConnectClientSecret = "linuxdo_connect_client_secret"
 	SettingKeyLinuxDoConnectRedirectURL  = "linuxdo_connect_redirect_url"
+
+	// Feishu OAuth 登录设置
+	SettingKeyFeishuConnectEnabled      = "feishu_connect_enabled"
+	SettingKeyFeishuConnectClientID     = "feishu_connect_client_id"
+	SettingKeyFeishuConnectClientSecret = "feishu_connect_client_secret"
+	SettingKeyFeishuConnectRedirectURL  = "feishu_connect_redirect_url"
 
 	// DingTalk Connect OAuth 登录设置
 	SettingKeyDingTalkConnectEnabled                 = "dingtalk_connect_enabled"

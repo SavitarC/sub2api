@@ -156,6 +156,26 @@ func TestMigration135AllowsGitHubAndGoogleAuthProviders(t *testing.T) {
 	require.Contains(t, sql, "'google'")
 }
 
+func TestMigration194AllowsFeishuAuthProviderEverywhere(t *testing.T) {
+	content, err := FS.ReadFile("194_add_feishu_auth_provider.sql")
+	require.NoError(t, err)
+
+	sql := string(content)
+	for _, constraint := range []string{
+		"users_signup_source_check",
+		"auth_identities_provider_type_check",
+		"auth_identity_channels_provider_type_check",
+		"pending_auth_sessions_provider_type_check",
+		"user_provider_default_grants_provider_type_check",
+	} {
+		require.Contains(t, sql, constraint)
+	}
+	require.Contains(t, sql, "'feishu'")
+	// Provider grants remain generic; this migration intentionally does not
+	// introduce Feishu-specific auth-source benefit defaults.
+	require.NotContains(t, sql, "auth_source_default_feishu")
+}
+
 func TestMigration151AddsAccountAutoPauseExpiryPartialIndex(t *testing.T) {
 	content, err := FS.ReadFile("151_account_autopause_expiry_index_notx.sql")
 	require.NoError(t, err)

@@ -1050,6 +1050,26 @@ linuxdo_connect:
   userinfo_username_path: ""
 
 # =============================================================================
+# Feishu OAuth Login (SSO)
+# 飞书 OAuth 登录（用于 Sub2API 用户登录）
+# =============================================================================
+feishu_connect:
+  enabled: false
+  # 飞书开放平台应用的 App ID / App Secret
+  client_id: ""
+  client_secret: ""
+  authorize_url: "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
+  token_url: "https://accounts.feishu.cn/oauth/v3/token"
+  userinfo_url: "https://open.feishu.cn/open-apis/authen/v1/user_info"
+  # 可选；需要读取邮箱时可在飞书开放平台授权相应权限后填写 scope
+  scopes: ""
+  # 示例: "https://your-domain.com/api/v1/auth/oauth/feishu/callback"
+  redirect_url: ""
+  frontend_redirect_url: "/auth/feishu/callback"
+  # 默认启用 PKCE；回调时还会校验一次性 state
+  use_pkce: true
+
+# =============================================================================
 # Generic OIDC OAuth Login (SSO)
 # 通用 OIDC OAuth 登录（用于 Sub2API 用户登录）
 # =============================================================================

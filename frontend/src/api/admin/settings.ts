@@ -480,6 +480,12 @@ export interface SystemSettings {
   linuxdo_connect_client_secret_configured: boolean;
   linuxdo_connect_redirect_url: string;
 
+  // Feishu OAuth settings
+  feishu_connect_enabled: boolean;
+  feishu_connect_client_id: string;
+  feishu_connect_client_secret_configured: boolean;
+  feishu_connect_redirect_url: string;
+
   // DingTalk Connect OAuth settings
   dingtalk_connect_enabled: boolean;
   dingtalk_connect_client_id: string;
@@ -803,6 +809,10 @@ export interface UpdateSettingsRequest {
   linuxdo_connect_client_id?: string;
   linuxdo_connect_client_secret?: string;
   linuxdo_connect_redirect_url?: string;
+  feishu_connect_enabled?: boolean;
+  feishu_connect_client_id?: string;
+  feishu_connect_client_secret?: string;
+  feishu_connect_redirect_url?: string;
   dingtalk_connect_enabled?: boolean;
   dingtalk_connect_client_id?: string;
   dingtalk_connect_client_secret?: string;

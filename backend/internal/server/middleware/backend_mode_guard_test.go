@@ -313,6 +313,18 @@ func TestBackendModeAuthGuard(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
+			name:       "enabled_blocks_feishu_oauth_start",
+			enabled:    "true",
+			path:       "/api/v1/auth/oauth/feishu/start",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "enabled_allows_feishu_oauth_callback",
+			enabled:    "true",
+			path:       "/api/v1/auth/oauth/feishu/callback",
+			wantStatus: http.StatusOK,
+		},
+		{
 			name:       "enabled_allows_oauth_pending_exchange",
 			enabled:    "true",
 			path:       "/api/v1/auth/oauth/pending/exchange",
