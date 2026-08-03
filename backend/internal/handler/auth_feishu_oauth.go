@@ -406,7 +406,7 @@ func feishuExchangeCode(ctx context.Context, cfg config.FeishuConnectConfig, cod
 	if err != nil {
 		return nil, fmt.Errorf("request token: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, feishuOAuthResponseMaxBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read token response: %w", err)
@@ -437,7 +437,7 @@ func feishuFetchUserInfo(ctx context.Context, cfg config.FeishuConnectConfig, ac
 	if err != nil {
 		return nil, fmt.Errorf("request userinfo: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, feishuOAuthResponseMaxBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read userinfo response: %w", err)
