@@ -302,6 +302,7 @@
           :disabled="registrationActionDisabled"
           :aff-code="formData.aff_code"
           :show-divider="false"
+          @start="handleOAuthStart"
         />
         <WechatOAuthSection
           v-if="wechatOAuthEnabled"

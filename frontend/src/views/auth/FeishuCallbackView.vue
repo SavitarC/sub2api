@@ -448,7 +448,10 @@ async function finalizeCompletion(completion: FeishuPendingCompletion): Promise<
   await router.replace(redirectTo.value)
 }
 
-async function applyCompletion(completion: FeishuPendingCompletion): Promise<void> {
+async function applyCompletion(
+  completion: FeishuPendingCompletion,
+  adoptionHandled = false
+): Promise<void> {
   setProfileSuggestion(completion)
   canCreateAccount.value = completion.create_account_allowed !== false
   redirectTo.value = sanitizeRedirectPath(completion.redirect, redirectTo.value)
@@ -473,20 +476,30 @@ async function applyCompletion(completion: FeishuPendingCompletion): Promise<voi
   }
 
   if (completion.auth_result === 'pending_session') {
-    if (adoptionRequired.value && (suggestedDisplayName.value || suggestedAvatarUrl.value)) {
+    if (
+      !adoptionHandled &&
+      adoptionRequired.value &&
+      (suggestedDisplayName.value || suggestedAvatarUrl.value)
+    ) {
       flowStep.value = 'adoption'
       persistPendingSession()
       isProcessing.value = false
       return
     }
-    throw new Error(t('auth.feishu.callbackMissingToken'))
+    if (!adoptionHandled) {
+      throw new Error(t('auth.feishu.callbackMissingToken'))
+    }
   }
 
   if (completion.error) {
     throw new Error(localizedCallbackError(completion.error))
   }
 
-  if (adoptionRequired.value && (suggestedDisplayName.value || suggestedAvatarUrl.value)) {
+  if (
+    !adoptionHandled &&
+    adoptionRequired.value &&
+    (suggestedDisplayName.value || suggestedAvatarUrl.value)
+  ) {
     flowStep.value = 'adoption'
     persistPendingSession()
     isProcessing.value = false
@@ -514,7 +527,10 @@ async function continueAfterAdoption(): Promise<void> {
   isSubmitting.value = true
   actionError.value = ''
   try {
-    await applyCompletion(await exchangePendingOAuthCompletion(currentAdoptionDecision()))
+    await applyCompletion(
+      await exchangePendingOAuthCompletion(currentAdoptionDecision()),
+      true
+    )
   } catch (error) {
     const message = requestErrorMessage(error, t('auth.loginFailed'))
     if (isRetryablePendingExchangeError(error)) {
@@ -560,6 +576,13 @@ async function createAccount(payload: PendingOAuthCreateAccountPayload): Promise
         email: payload.email.trim(),
         password: payload.password,
         verify_code: payload.verifyCode || undefined,
+        ...(payload.turnstileToken ? { turnstile_token: payload.turnstileToken } : {}),
+        ...(payload.tencentCaptchaTicket
+          ? {
+              tencent_captcha_ticket: payload.tencentCaptchaTicket,
+              tencent_captcha_randstr: payload.tencentCaptchaRandstr
+            }
+          : {}),
         invitation_code: payload.invitationCode || undefined,
         ...oauthAffiliatePayload(loadOAuthAffiliateCode()),
         ...serializeAdoptionDecision(currentAdoptionDecision())

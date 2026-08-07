@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import PendingOAuthCreateAccountForm from '@/components/auth/PendingOAuthCreateAccountForm.vue'
 import FeishuCallbackView from '../FeishuCallbackView.vue'
 
 const routeState = vi.hoisted(() => ({
@@ -226,6 +227,47 @@ describe('FeishuCallbackView', () => {
     expect(setToken).toHaveBeenCalledWith('created-feishu-access-token')
   })
 
+  it('forwards captcha proof when creating a pending Feishu account', async () => {
+    exchangePendingOAuthCompletion.mockResolvedValue({
+      auth_result: 'pending_session',
+      provider: 'feishu',
+      step: 'create_account_required',
+      pending_email: 'captcha.feishu@example.com'
+    })
+    apiClientPost.mockResolvedValue({
+      data: {
+        access_token: 'captcha-feishu-access-token',
+        redirect: '/dashboard'
+      }
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+    wrapper.findComponent(PendingOAuthCreateAccountForm).vm.$emit('submit', {
+      email: 'captcha.feishu@example.com',
+      password: 'mock-secret',
+      verifyCode: '123456',
+      turnstileToken: 'mock-turnstile-token',
+      tencentCaptchaTicket: 'mock-tencent-ticket',
+      tencentCaptchaRandstr: 'mock-tencent-randstr',
+      invitationCode: 'mock-invitation'
+    })
+    await flushPromises()
+
+    expect(apiClientPost).toHaveBeenCalledWith('/auth/oauth/pending/create-account', {
+      email: 'captcha.feishu@example.com',
+      password: 'mock-secret',
+      verify_code: '123456',
+      turnstile_token: 'mock-turnstile-token',
+      tencent_captcha_ticket: 'mock-tencent-ticket',
+      tencent_captcha_randstr: 'mock-tencent-randstr',
+      invitation_code: 'mock-invitation',
+      adopt_display_name: false,
+      adopt_avatar: false
+    })
+    expect(setToken).toHaveBeenCalledWith('captcha-feishu-access-token')
+  })
+
   it('binds an existing account through the generic pending endpoint', async () => {
     exchangePendingOAuthCompletion.mockResolvedValue({
       auth_result: 'pending_session',
@@ -323,5 +365,36 @@ describe('FeishuCallbackView', () => {
     expect(wrapper.get('[data-testid="feishu-adoption-continue"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Mock transient adoption failure')
     expect(setToken).not.toHaveBeenCalled()
+  })
+
+  it('finishes a current-account binding after profile adoption is confirmed', async () => {
+    exchangePendingOAuthCompletion
+      .mockResolvedValueOnce({
+        auth_result: 'pending_session',
+        provider: 'feishu',
+        adoption_required: true,
+        suggested_display_name: 'Mock Feishu User',
+        redirect: '/profile'
+      })
+      .mockResolvedValueOnce({
+        auth_result: 'pending_session',
+        provider: 'feishu',
+        adoption_required: true,
+        suggested_display_name: 'Mock Feishu User',
+        redirect: '/profile'
+      })
+
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="feishu-adoption-continue"]').trigger('click')
+    await flushPromises()
+
+    expect(exchangePendingOAuthCompletion).toHaveBeenNthCalledWith(2, {
+      adoptDisplayName: true,
+      adoptAvatar: false
+    })
+    expect(clearPendingAuthSession).toHaveBeenCalled()
+    expect(showSuccess).toHaveBeenCalledWith('profile.authBindings.bindSuccess')
+    expect(replace).toHaveBeenCalledWith('/profile')
   })
 })

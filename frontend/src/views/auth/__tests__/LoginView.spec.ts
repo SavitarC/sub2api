@@ -1,8 +1,18 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { getPublicSettingsMock } = vi.hoisted(() => ({
-  getPublicSettingsMock: vi.fn()
+const {
+  getPublicSettingsMock,
+  startOAuthLoginMock,
+  verifyActionMock,
+  resetCaptchaMock,
+  locationState
+} = vi.hoisted(() => ({
+  getPublicSettingsMock: vi.fn(),
+  startOAuthLoginMock: vi.fn(),
+  verifyActionMock: vi.fn(),
+  resetCaptchaMock: vi.fn(),
+  locationState: { current: { href: 'http://localhost/login' } as { href: string } }
 }))
 
 const publicSettings = {
@@ -56,6 +66,8 @@ vi.mock('@/stores', () => ({
 
 vi.mock('@/api/auth', () => ({
   getPublicSettings: (...args: unknown[]) => getPublicSettingsMock(...args),
+  startOAuthLogin: (...args: unknown[]) => startOAuthLoginMock(...args),
+  buildOAuthLoginStartURL: vi.fn(() => '/api/v1/auth/oauth/feishu/start'),
   isTotp2FARequired: () => false,
   isWeChatWebOAuthEnabled: (settings: { wechat_oauth_enabled?: boolean }) =>
     settings.wechat_oauth_enabled === true
@@ -68,12 +80,24 @@ async function mountLogin() {
       stubs: {
         AuthLayout: { template: '<div><slot /><slot name="footer" /></div>' },
         Icon: true,
-        TurnstileWidget: true,
+        TurnstileWidget: {
+          template: '<div data-testid="mock-action-captcha" />',
+          methods: {
+            verifyAction: (...args: unknown[]) => verifyActionMock(...args),
+            reset: (...args: unknown[]) => resetCaptchaMock(...args)
+          }
+        },
         LoginAgreementPrompt: true,
         EmailOAuthButtons: true,
         LinuxDoOAuthSection: true,
         DingTalkOAuthSection: true,
-        FeishuOAuthSection: { template: '<button data-testid="mock-feishu-login-entry" />' },
+        FeishuOAuthSection: {
+          emits: ['start'],
+          template: `<button
+            data-testid="mock-feishu-login-entry"
+            @click="$emit('start', { provider: 'feishu', params: { redirect: '/dashboard' } })"
+          />`
+        },
         WechatOAuthSection: true,
         OidcOAuthSection: true,
         TotpLoginModal: true,
@@ -88,6 +112,14 @@ describe('LoginView OAuth entries', () => {
   beforeEach(() => {
     getPublicSettingsMock.mockReset()
     getPublicSettingsMock.mockResolvedValue(publicSettings)
+    startOAuthLoginMock.mockReset()
+    verifyActionMock.mockReset()
+    resetCaptchaMock.mockReset()
+    locationState.current = { href: 'http://localhost/login' }
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: locationState.current
+    })
     localStorage.clear()
     sessionStorage.clear()
   })
@@ -107,5 +139,34 @@ describe('LoginView OAuth entries', () => {
     await flushPromises()
 
     expect(enabledWrapper.get('[data-testid="mock-feishu-login-entry"]').exists()).toBe(true)
+  })
+
+  it('runs Feishu OAuth through the action-captcha start handler', async () => {
+    getPublicSettingsMock.mockResolvedValueOnce({
+      ...publicSettings,
+      feishu_oauth_enabled: true,
+      tencent_captcha_enabled: true,
+      tencent_captcha_app_id: 'mock-tencent-app-id'
+    })
+    verifyActionMock.mockResolvedValue({
+      token: 'mock-tencent-ticket',
+      randstr: 'mock-tencent-randstr'
+    })
+    startOAuthLoginMock.mockResolvedValue({ authorize_url: '/mock-feishu-authorize' })
+
+    const wrapper = await mountLogin()
+    await flushPromises()
+    await wrapper.get('[data-testid="mock-feishu-login-entry"]').trigger('click')
+    await flushPromises()
+
+    expect(verifyActionMock).toHaveBeenCalled()
+    expect(startOAuthLoginMock).toHaveBeenCalledWith(
+      { provider: 'feishu', params: { redirect: '/dashboard' } },
+      {
+        tencent_captcha_ticket: 'mock-tencent-ticket',
+        tencent_captcha_randstr: 'mock-tencent-randstr'
+      }
+    )
+    expect(locationState.current.href).toBe('/mock-feishu-authorize')
   })
 })

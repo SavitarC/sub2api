@@ -29,6 +29,7 @@ export type OAuthLoginProvider =
   | 'google'
   | 'linuxdo'
   | 'dingtalk'
+  | 'feishu'
   | 'wechat'
   | 'oidc'
 

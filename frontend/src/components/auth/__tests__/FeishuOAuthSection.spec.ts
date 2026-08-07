@@ -6,10 +6,6 @@ const routeState = vi.hoisted(() => ({
   query: {} as Record<string, unknown>
 }))
 
-const locationState = vi.hoisted(() => ({
-  current: { href: 'http://localhost/login' } as { href: string }
-}))
-
 vi.mock('vue-router', () => ({
   useRoute: () => routeState
 }))
@@ -26,11 +22,6 @@ describe('FeishuOAuthSection', () => {
       redirect: '/billing?plan=mock',
       aff: 'mock-feishu-affiliate'
     }
-    locationState.current = { href: 'http://localhost/login' }
-    Object.defineProperty(window, 'location', {
-      configurable: true,
-      value: locationState.current
-    })
     localStorage.clear()
     sessionStorage.clear()
   })
@@ -41,9 +32,15 @@ describe('FeishuOAuthSection', () => {
     expect(wrapper.text()).toContain('Continue with Mock Feishu')
     await wrapper.get('[data-testid="feishu-oauth-login"]').trigger('click')
 
-    expect(locationState.current.href).toBe(
-      '/api/v1/auth/oauth/feishu/start?redirect=%2Fbilling%3Fplan%3Dmock&aff_code=mock-feishu-affiliate'
-    )
+    expect(wrapper.emitted('start')).toEqual([[
+      {
+        provider: 'feishu',
+        params: {
+          redirect: '/billing?plan=mock',
+          aff_code: 'mock-feishu-affiliate'
+        }
+      }
+    ]])
     expect(sessionStorage.getItem('oauth_aff_code')).toBe('mock-feishu-affiliate')
   })
 })

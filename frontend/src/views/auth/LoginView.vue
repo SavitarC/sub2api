@@ -183,6 +183,7 @@
             v-if="feishuOAuthEnabled"
             :disabled="authActionDisabled"
             :show-divider="false"
+            @start="handleOAuthStart"
           />
           <WechatOAuthSection
             v-if="wechatOAuthEnabled"

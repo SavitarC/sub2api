@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestFeishuOAuthCallback_MockedFreshAccountCompletesTokenAndIdentity(t *testing.T) {
+func TestFeishuOAuthCallback_MockedFreshAccountPromptsForProfileBeforeTokenExchange(t *testing.T) {
 	server := newMockFeishuOAuthServer(t, "ou_mock_fresh", "fresh@example.com")
 	defer server.Close()
 
@@ -49,24 +49,32 @@ func TestFeishuOAuthCallback_MockedFreshAccountCompletesTokenAndIdentity(t *test
 	require.Equal(t, "feishu:cli_mock", session.ProviderKey)
 	require.Equal(t, "ou_mock_fresh", session.ProviderSubject)
 
-	identity, err := client.AuthIdentity.Query().
-		Where(
-			authidentity.ProviderTypeEQ("feishu"),
-			authidentity.ProviderKeyEQ("feishu:cli_mock"),
-			authidentity.ProviderSubjectEQ("ou_mock_fresh"),
-		).
-		Only(ctx)
-	require.NoError(t, err)
-	require.Equal(t, identity.UserID, *session.TargetUserID)
+	previewRecorder := httptest.NewRecorder()
+	previewContext, _ := gin.CreateTestContext(previewRecorder)
+	previewRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/pending/exchange", nil)
+	previewRequest.AddCookie(&http.Cookie{Name: oauthPendingSessionCookieName, Value: sessionCookie.Value})
+	previewRequest.AddCookie(encodedCookie(oauthPendingBrowserCookieName, "browser-fresh"))
+	previewContext.Request = previewRequest
 
-	userEntity, err := client.User.Get(ctx, identity.UserID)
+	handler.ExchangePendingOAuthCompletion(previewContext)
+
+	require.Equal(t, http.StatusOK, previewRecorder.Code)
+	preview := decodeJSONResponseData(t, previewRecorder)
+	require.Equal(t, true, preview["adoption_required"])
+	require.Equal(t, "飞书 Mock 用户", preview["suggested_display_name"])
+	require.NotContains(t, preview, "access_token")
+	unconsumedSession, err := client.PendingAuthSession.Get(ctx, session.ID)
 	require.NoError(t, err)
-	require.Equal(t, feishuSyntheticEmail("cli_mock", "ou_mock_fresh"), userEntity.Email)
-	require.Equal(t, "feishu", userEntity.SignupSource)
+	require.Nil(t, unconsumedSession.ConsumedAt)
 
 	exchangeRecorder := httptest.NewRecorder()
 	exchangeContext, _ := gin.CreateTestContext(exchangeRecorder)
-	exchangeRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/pending/exchange", nil)
+	exchangeRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/oauth/pending/exchange",
+		bytes.NewBufferString(`{"adopt_display_name":true,"adopt_avatar":false}`),
+	)
+	exchangeRequest.Header.Set("Content-Type", "application/json")
 	exchangeRequest.AddCookie(&http.Cookie{Name: oauthPendingSessionCookieName, Value: sessionCookie.Value})
 	exchangeRequest.AddCookie(encodedCookie(oauthPendingBrowserCookieName, "browser-fresh"))
 	exchangeContext.Request = exchangeRequest
@@ -80,9 +88,23 @@ func TestFeishuOAuthCallback_MockedFreshAccountCompletesTokenAndIdentity(t *test
 	require.NotEmpty(t, accessToken)
 	require.NotEmpty(t, payload["refresh_token"])
 	require.Equal(t, "/dashboard", payload["redirect"])
+	identity, err := client.AuthIdentity.Query().
+		Where(
+			authidentity.ProviderTypeEQ("feishu"),
+			authidentity.ProviderKeyEQ("feishu:cli_mock"),
+			authidentity.ProviderSubjectEQ("ou_mock_fresh"),
+		).
+		Only(ctx)
+	require.NoError(t, err)
+	require.Equal(t, identity.UserID, *session.TargetUserID)
 	claims, err := handler.authService.ValidateToken(accessToken)
 	require.NoError(t, err)
 	require.Equal(t, identity.UserID, claims.UserID)
+	userEntity, err := client.User.Get(ctx, identity.UserID)
+	require.NoError(t, err)
+	require.Equal(t, feishuSyntheticEmail("cli_mock", "ou_mock_fresh"), userEntity.Email)
+	require.Equal(t, "feishu", userEntity.SignupSource)
+	require.Equal(t, "飞书 Mock 用户", userEntity.Username)
 
 	consumedSession, err := client.PendingAuthSession.Get(ctx, session.ID)
 	require.NoError(t, err)
@@ -513,7 +535,10 @@ func TestFeishuAPIError_TruncatesUpstreamMessage(t *testing.T) {
 func TestFeishuOAuthStart_DefaultPKCEAndFiveMinuteCookies(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := mockFeishuConfig("https://feishu.example.com")
-	h := &AuthHandler{cfg: &config.Config{Feishu: cfg}}
+	h, client := newOAuthPendingFlowTestHandler(t, false)
+	t.Cleanup(func() { _ = client.Close() })
+	h.settingSvc = nil
+	h.cfg = &config.Config{Feishu: cfg}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/feishu/start?redirect=/settings/profile&aff_code=AFF123", nil)

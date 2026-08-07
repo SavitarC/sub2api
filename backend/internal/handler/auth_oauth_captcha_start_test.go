@@ -82,6 +82,7 @@ func oauthStartHandlers() map[string]func(*AuthHandler, *gin.Context) {
 		"github":   func(h *AuthHandler, c *gin.Context) { h.GitHubOAuthStart(c) },
 		"google":   func(h *AuthHandler, c *gin.Context) { h.GoogleOAuthStart(c) },
 		"linuxdo":  func(h *AuthHandler, c *gin.Context) { h.LinuxDoOAuthStart(c) },
+		"feishu":   func(h *AuthHandler, c *gin.Context) { h.FeishuOAuthStart(c) },
 		"dingtalk": func(h *AuthHandler, c *gin.Context) { h.DingTalkOAuthStart(c) },
 		"wechat":   func(h *AuthHandler, c *gin.Context) { h.WeChatOAuthStart(c) },
 		"oidc":     func(h *AuthHandler, c *gin.Context) { h.OIDCOAuthStart(c) },
@@ -153,13 +154,41 @@ func TestOAuthStartPostRequiresTencentProofWhenEnabled(t *testing.T) {
 
 func TestOAuthBindingPathRemainsOutsideTencentGate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	handler := &AuthHandler{}
+	for _, provider := range []string{"oidc", "feishu"} {
+		t.Run(provider, func(t *testing.T) {
+			handler := &AuthHandler{}
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/"+provider+"/bind/start", nil)
+
+			require.True(t, handler.requireActionCaptchaForOAuthLoginStart(c))
+			require.Equal(t, http.StatusOK, recorder.Code)
+		})
+	}
+}
+
+func TestFeishuOAuthStartPostVerifiesTencentProofAndReturnsAuthorizeURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler, verifier := newOAuthCaptchaTestHandler(true)
+	handler.settingSvc = nil
+	handler.cfg.Feishu = mockFeishuConfig("https://feishu.example.com")
+
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/oidc/bind/start", nil)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/oauth/feishu/start?redirect=/dashboard",
+		strings.NewReader(`{"tencent_captcha_ticket":"ticket-value","tencent_captcha_randstr":"@rand-value"}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
 
-	require.True(t, handler.requireActionCaptchaForOAuthLoginStart(c))
+	handler.FeishuOAuthStart(c)
+
 	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"authorize_url":"https://feishu.example.com/open-apis/authen/v1/authorize?`)
+	require.Equal(t, 1, verifier.calls)
+	require.Equal(t, service.TencentCaptchaProof{Ticket: "ticket-value", Randstr: "@rand-value"}, verifier.proof)
+	require.NotNil(t, findCookie(recorder.Result().Cookies(), feishuOAuthStateCookieName))
 }
 
 func TestOAuthStartGetRemainsCompatibleWhenTencentDisabled(t *testing.T) {

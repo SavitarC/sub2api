@@ -92,6 +92,9 @@ func (e *feishuAPIError) Error() string {
 
 // FeishuOAuthStart starts a browser-bound Feishu OAuth authorization flow.
 func (h *AuthHandler) FeishuOAuthStart(c *gin.Context) {
+	if !h.requireActionCaptchaForOAuthLoginStart(c) {
+		return
+	}
 	cfg, err := h.getFeishuOAuthConfig(c.Request.Context())
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -154,7 +157,7 @@ func (h *AuthHandler) FeishuOAuthStart(c *gin.Context) {
 		response.ErrorFrom(c, infraerrors.InternalServer("OAUTH_BUILD_URL_FAILED", "failed to build oauth authorization url").WithCause(err))
 		return
 	}
-	c.Redirect(http.StatusFound, authorizeURL)
+	respondOAuthStart(c, authorizeURL)
 }
 
 // FeishuOAuthCallback exchanges the one-time code and enters the generic
@@ -330,6 +333,7 @@ func (h *AuthHandler) FeishuOAuthCallback(c *gin.Context) {
 				Intent: oauthIntentLogin, Identity: identity, TargetUserID: &user.ID,
 				ResolvedEmail: syntheticEmail, RedirectTo: redirectTo, BrowserSessionKey: browserSessionKey,
 				UpstreamIdentityClaims: claims, CompletionResponse: map[string]any{"redirect": redirectTo},
+				PreserveInitialAdoptionPrompt: true,
 			}); err != nil {
 				redirectError("session_error", "failed to continue oauth login", "")
 				return

@@ -36,21 +36,23 @@ const (
 	oauthPendingCookieMaxAgeSec   = 10 * 60
 	oauthPendingChoiceStep        = "choose_account_action_required"
 
-	oauthCompletionResponseKey = "completion_response"
-	oauthPromoCodeStateKey     = "promo_code"
+	oauthCompletionResponseKey  = "completion_response"
+	oauthPromoCodeStateKey      = "promo_code"
+	oauthInitialBindingStateKey = "initial_identity_binding"
 )
 
 var pendingOAuthCreateAccountPreCommitHook func(context.Context, *dbent.PendingAuthSession) error
 
 type oauthPendingSessionPayload struct {
-	Intent                 string
-	Identity               service.PendingAuthIdentityKey
-	TargetUserID           *int64
-	ResolvedEmail          string
-	RedirectTo             string
-	BrowserSessionKey      string
-	UpstreamIdentityClaims map[string]any
-	CompletionResponse     map[string]any
+	Intent                        string
+	Identity                      service.PendingAuthIdentityKey
+	TargetUserID                  *int64
+	ResolvedEmail                 string
+	RedirectTo                    string
+	BrowserSessionKey             string
+	UpstreamIdentityClaims        map[string]any
+	CompletionResponse            map[string]any
+	PreserveInitialAdoptionPrompt bool
 }
 
 type oauthAdoptionDecisionRequest struct {
@@ -242,6 +244,9 @@ func (h *AuthHandler) createOAuthPendingSession(c *gin.Context, payload oauthPen
 	}
 	if promoCode := readOAuthPromoCode(c); promoCode != "" {
 		localFlowState[oauthPromoCodeStateKey] = promoCode
+	}
+	if payload.PreserveInitialAdoptionPrompt {
+		localFlowState[oauthInitialBindingStateKey] = true
 	}
 
 	session, err := svc.CreatePendingSession(c.Request.Context(), service.CreatePendingAuthSessionInput{
@@ -1437,6 +1442,9 @@ func (h *AuthHandler) shouldSkipPendingOAuthAdoptionPrompt(
 	payload map[string]any,
 ) (bool, error) {
 	if session == nil || len(payload) == 0 {
+		return false, nil
+	}
+	if initialBinding, _ := session.LocalFlowState[oauthInitialBindingStateKey].(bool); initialBinding {
 		return false, nil
 	}
 	if !pendingOAuthCompletionCanIssueTokenPair(session, payload) {

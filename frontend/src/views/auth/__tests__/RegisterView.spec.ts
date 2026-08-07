@@ -2,8 +2,10 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import RegisterView from '@/views/auth/RegisterView.vue'
 
-const { getPublicSettingsMock } = vi.hoisted(() => ({
-  getPublicSettingsMock: vi.fn()
+const { getPublicSettingsMock, buildOAuthLoginStartURLMock, locationState } = vi.hoisted(() => ({
+  getPublicSettingsMock: vi.fn(),
+  buildOAuthLoginStartURLMock: vi.fn(),
+  locationState: { current: { href: 'http://localhost/register' } as { href: string } }
 }))
 
 const publicSettings = {
@@ -54,7 +56,8 @@ vi.mock('@/api/auth', async () => {
   const actual = await vi.importActual<typeof import('@/api/auth')>('@/api/auth')
   return {
     ...actual,
-    getPublicSettings: (...args: unknown[]) => getPublicSettingsMock(...args)
+    getPublicSettings: (...args: unknown[]) => getPublicSettingsMock(...args),
+    buildOAuthLoginStartURL: (...args: unknown[]) => buildOAuthLoginStartURLMock(...args)
   }
 })
 
@@ -68,7 +71,13 @@ function mountRegister() {
         LoginAgreementPrompt: true,
         EmailOAuthButtons: true,
         LinuxDoOAuthSection: true,
-        FeishuOAuthSection: { template: '<button data-testid="mock-feishu-register-entry" />' },
+        FeishuOAuthSection: {
+          emits: ['start'],
+          template: `<button
+            data-testid="mock-feishu-register-entry"
+            @click="$emit('start', { provider: 'feishu', params: { redirect: '/dashboard' } })"
+          />`
+        },
         WechatOAuthSection: true,
         OidcOAuthSection: true,
         RouterLink: true,
@@ -82,6 +91,12 @@ describe('RegisterView invitation layout', () => {
   beforeEach(() => {
     getPublicSettingsMock.mockReset()
     getPublicSettingsMock.mockResolvedValue(publicSettings)
+    buildOAuthLoginStartURLMock.mockReset().mockReturnValue('/mock-feishu-start')
+    locationState.current = { href: 'http://localhost/register' }
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: locationState.current
+    })
   })
 
   it('keeps the optional affiliate invitation field before Turnstile', async () => {
@@ -122,5 +137,22 @@ describe('RegisterView invitation layout', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-testid="mock-feishu-register-entry"]').exists()).toBe(true)
+  })
+
+  it('runs Feishu registration through the standard OAuth start handler', async () => {
+    getPublicSettingsMock.mockResolvedValueOnce({
+      ...publicSettings,
+      feishu_oauth_enabled: true
+    })
+
+    const wrapper = mountRegister()
+    await flushPromises()
+    await wrapper.get('[data-testid="mock-feishu-register-entry"]').trigger('click')
+
+    expect(buildOAuthLoginStartURLMock).toHaveBeenCalledWith({
+      provider: 'feishu',
+      params: { redirect: '/dashboard' }
+    })
+    expect(locationState.current.href).toBe('/mock-feishu-start')
   })
 })
