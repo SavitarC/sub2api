@@ -157,10 +157,16 @@ func TestMigration135AllowsGitHubAndGoogleAuthProviders(t *testing.T) {
 }
 
 func TestMigration194AllowsFeishuAuthProviderEverywhere(t *testing.T) {
-	content, err := FS.ReadFile("194_add_feishu_auth_provider.sql")
+	addContent, err := FS.ReadFile("194_add_feishu_auth_provider.sql")
+	require.NoError(t, err)
+	validateContent, err := FS.ReadFile("194a_validate_feishu_auth_provider.sql")
+	require.NoError(t, err)
+	swapContent, err := FS.ReadFile("194b_swap_feishu_auth_provider_constraints.sql")
 	require.NoError(t, err)
 
-	sql := string(content)
+	addSQL := string(addContent)
+	validateSQL := string(validateContent)
+	swapSQL := string(swapContent)
 	for _, constraint := range []string{
 		"users_signup_source_check",
 		"auth_identities_provider_type_check",
@@ -168,12 +174,24 @@ func TestMigration194AllowsFeishuAuthProviderEverywhere(t *testing.T) {
 		"pending_auth_sessions_provider_type_check",
 		"user_provider_default_grants_provider_type_check",
 	} {
-		require.Contains(t, sql, constraint)
+		temporaryConstraint := constraint + "_feishu"
+		require.Contains(t, addSQL, "ADD CONSTRAINT "+temporaryConstraint)
+		require.Contains(t, validateSQL, "VALIDATE CONSTRAINT "+temporaryConstraint)
+		require.Contains(t, swapSQL, "DROP CONSTRAINT IF EXISTS "+constraint)
+		require.Contains(t, swapSQL, "RENAME CONSTRAINT "+temporaryConstraint+" TO "+constraint)
 	}
-	require.Contains(t, sql, "'feishu'")
+	require.Equal(t, 5, strings.Count(addSQL, "NOT VALID"))
+	require.Contains(t, addSQL, "'feishu'")
+	require.Contains(t, addSQL, "SET LOCAL lock_timeout = '5s'")
+	require.Contains(t, validateSQL, "SET LOCAL lock_timeout = '5s'")
+	require.Contains(t, swapSQL, "SET LOCAL lock_timeout = '5s'")
+	require.NotContains(t, addSQL, "DROP CONSTRAINT")
+	require.NotContains(t, addSQL, "VALIDATE CONSTRAINT")
+	require.NotContains(t, validateSQL, "DROP CONSTRAINT")
+	require.NotContains(t, validateSQL, "RENAME CONSTRAINT")
 	// Provider grants remain generic; this migration intentionally does not
 	// introduce Feishu-specific auth-source benefit defaults.
-	require.NotContains(t, sql, "auth_source_default_feishu")
+	require.NotContains(t, addSQL+validateSQL+swapSQL, "auth_source_default_feishu")
 }
 
 func TestMigration151AddsAccountAutoPauseExpiryPartialIndex(t *testing.T) {

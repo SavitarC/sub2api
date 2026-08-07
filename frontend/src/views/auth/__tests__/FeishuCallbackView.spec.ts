@@ -111,17 +111,23 @@ describe('FeishuCallbackView', () => {
     expect(replace).toHaveBeenCalledWith('/mock-dashboard')
   })
 
-  it('accepts the fast-path Feishu token fragment without a pending exchange', async () => {
+  it('does not accept a bearer fragment without a browser-bound pending exchange', async () => {
     window.location.hash =
       '#access_token=fragment-feishu-access&refresh_token=fragment-feishu-refresh&expires_in=3600&token_type=Bearer&redirect=%2Fmock-fast-path'
+    exchangePendingOAuthCompletion.mockRejectedValue(
+      Object.assign(new Error('pending session not found'), { status: 404 })
+    )
 
-    mountView()
+    const wrapper = mountView()
     await flushPromises()
 
-    expect(exchangePendingOAuthCompletion).not.toHaveBeenCalled()
-    expect(setToken).toHaveBeenCalledWith('fragment-feishu-access')
-    expect(localStorage.getItem('refresh_token')).toBe('fragment-feishu-refresh')
-    expect(replace).toHaveBeenCalledWith('/mock-fast-path')
+    expect(exchangePendingOAuthCompletion).toHaveBeenCalledWith()
+    expect(setToken).not.toHaveBeenCalled()
+    expect(localStorage.getItem('refresh_token')).toBeNull()
+    expect(replace).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="feishu-callback-error"]').text()).toContain(
+      'pending session not found'
+    )
   })
 
   it('falls back safely when the callback has duplicate redirect query values', async () => {
@@ -151,19 +157,32 @@ describe('FeishuCallbackView', () => {
     expect(setToken).not.toHaveBeenCalled()
   })
 
-  it('shows an error when the fast-path Feishu token cannot initialize the session', async () => {
-    window.location.hash = '#access_token=invalid-mock-token&redirect=%2Fdashboard'
-    setToken.mockRejectedValueOnce(new Error('Mock Feishu session initialization failed'))
+  it('retries a transient pending exchange without restarting OAuth', async () => {
+    exchangePendingOAuthCompletion
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Mock Feishu service unavailable'), {
+          status: 503
+        })
+      )
+      .mockResolvedValueOnce({
+        access_token: 'retried-feishu-access-token',
+        redirect: '/dashboard'
+      })
 
     const wrapper = mountView()
     await flushPromises()
 
-    expect(exchangePendingOAuthCompletion).not.toHaveBeenCalled()
-    expect(clearPendingAuthSession).toHaveBeenCalled()
+    expect(exchangePendingOAuthCompletion).toHaveBeenCalledTimes(1)
+    expect(clearPendingAuthSession).not.toHaveBeenCalled()
     expect(wrapper.get('[data-testid="feishu-callback-error"]').text()).toContain(
-      'Mock Feishu session initialization failed'
+      'Mock Feishu service unavailable'
     )
-    expect(replace).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="feishu-callback-retry"]').trigger('click')
+    await flushPromises()
+
+    expect(exchangePendingOAuthCompletion).toHaveBeenCalledTimes(2)
+    expect(setToken).toHaveBeenCalledWith('retried-feishu-access-token')
+    expect(replace).toHaveBeenCalledWith('/dashboard')
   })
 
   it('creates an account through the generic pending endpoint with mock Feishu profile data', async () => {
@@ -279,5 +298,30 @@ describe('FeishuCallbackView', () => {
     })
     expect(setToken).toHaveBeenCalledWith('mock-2fa-access-token')
     expect(replace).toHaveBeenCalledWith('/dashboard')
+  })
+
+  it('keeps the adoption step available when its exchange fails transiently', async () => {
+    exchangePendingOAuthCompletion
+      .mockResolvedValueOnce({
+        auth_result: 'pending_session',
+        provider: 'feishu',
+        adoption_required: true,
+        suggested_display_name: 'Mock Feishu User',
+        redirect: '/dashboard'
+      })
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Mock transient adoption failure'), {
+          status: 503
+        })
+      )
+
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="feishu-adoption-continue"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="feishu-adoption-continue"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Mock transient adoption failure')
+    expect(setToken).not.toHaveBeenCalled()
   })
 })

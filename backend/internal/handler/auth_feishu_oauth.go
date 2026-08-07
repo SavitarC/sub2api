@@ -26,16 +26,17 @@ import (
 )
 
 const (
-	feishuOAuthCookiePath         = "/api/v1/auth/oauth/feishu"
-	feishuOAuthStateCookieName    = "feishu_oauth_state"
-	feishuOAuthVerifierCookieName = "feishu_oauth_verifier"
-	feishuOAuthRedirectCookieName = "feishu_oauth_redirect"
-	feishuOAuthIntentCookieName   = "feishu_oauth_intent"
-	feishuOAuthBindUserCookieName = "feishu_oauth_bind_user"
-	feishuOAuthCookieMaxAgeSec    = 5 * 60
-	feishuOAuthDefaultRedirectTo  = "/dashboard"
-	feishuOAuthDefaultFrontendCB  = "/auth/feishu/callback"
-	feishuOAuthResponseMaxBytes   = 1 << 20
+	feishuOAuthCookiePath          = "/api/v1/auth/oauth/feishu"
+	feishuOAuthStateCookieName     = "feishu_oauth_state"
+	feishuOAuthVerifierCookieName  = "feishu_oauth_verifier"
+	feishuOAuthRedirectCookieName  = "feishu_oauth_redirect"
+	feishuOAuthIntentCookieName    = "feishu_oauth_intent"
+	feishuOAuthBindUserCookieName  = "feishu_oauth_bind_user"
+	feishuOAuthAffiliateCookieName = "feishu_oauth_aff_code"
+	feishuOAuthCookieMaxAgeSec     = 5 * 60
+	feishuOAuthDefaultRedirectTo   = "/dashboard"
+	feishuOAuthDefaultFrontendCB   = "/auth/feishu/callback"
+	feishuOAuthResponseMaxBytes    = 1 << 20
 )
 
 type feishuTokenResponse struct {
@@ -115,6 +116,15 @@ func (h *AuthHandler) FeishuOAuthStart(c *gin.Context) {
 	setFeishuOAuthCookie(c, feishuOAuthRedirectCookieName, encodeCookieValue(redirectTo), secure)
 	intent := normalizeOAuthIntent(c.Query("intent"))
 	setFeishuOAuthCookie(c, feishuOAuthIntentCookieName, encodeCookieValue(intent), secure)
+	affiliateCode := strings.TrimSpace(firstNonEmpty(c.Query("aff_code"), c.Query("aff")))
+	if len(affiliateCode) > service.AffiliateCodeMaxLength {
+		affiliateCode = ""
+	}
+	if affiliateCode != "" {
+		setFeishuOAuthCookie(c, feishuOAuthAffiliateCookieName, encodeCookieValue(affiliateCode), secure)
+	} else {
+		clearFeishuOAuthCookie(c, feishuOAuthAffiliateCookieName, secure)
+	}
 	captureOAuthPromoCode(c, secure)
 	setOAuthPendingBrowserCookie(c, browserSessionKey, secure)
 	clearOAuthPendingSessionCookie(c, secure)
@@ -174,6 +184,7 @@ func (h *AuthHandler) FeishuOAuthCallback(c *gin.Context) {
 		clearFeishuOAuthCookie(c, feishuOAuthRedirectCookieName, secure)
 		clearFeishuOAuthCookie(c, feishuOAuthIntentCookieName, secure)
 		clearFeishuOAuthCookie(c, feishuOAuthBindUserCookieName, secure)
+		clearFeishuOAuthCookie(c, feishuOAuthAffiliateCookieName, secure)
 		clearOAuthPromoCodeCookie(c, secure)
 	}
 	redirectError := func(code, message, description string) {
@@ -184,11 +195,6 @@ func (h *AuthHandler) FeishuOAuthCallback(c *gin.Context) {
 		clearFlowCookies()
 		redirectToFrontendCallback(c, frontendCallback)
 	}
-	redirectTokenPair := func(tokenPair *service.TokenPair, redirectTo string) {
-		clearFlowCookies()
-		redirectOAuthTokenPair(c, frontendCallback, tokenPair, redirectTo)
-	}
-
 	if providerErr := strings.TrimSpace(c.Query("error")); providerErr != "" {
 		redirectError("provider_error", providerErr, c.Query("error_description"))
 		return
@@ -309,8 +315,8 @@ func (h *AuthHandler) FeishuOAuthCallback(c *gin.Context) {
 			redirectError("session_error", infraerrors.Reason(err), infraerrors.Message(err))
 			return
 		}
-		tokenPair, user, registerErr := h.authService.LoginOrRegisterOAuthWithTokenPairAndPromoCode(
-			c.Request.Context(), syntheticEmail, username, "", "", readOAuthPromoCode(c), "feishu",
+		user, registerErr := h.authService.LoginOrRegisterOAuthUserWithPromoCode(
+			c.Request.Context(), syntheticEmail, username, "", readFeishuOAuthAffiliateCode(c), readOAuthPromoCode(c), "feishu",
 		)
 		if registerErr == nil {
 			if err := applyPendingOAuthBinding(c.Request.Context(), h.entClient(), h.authService, h.userService, &dbent.PendingAuthSession{
@@ -320,10 +326,15 @@ func (h *AuthHandler) FeishuOAuthCallback(c *gin.Context) {
 				redirectError("session_error", "failed to bind oauth identity", "")
 				return
 			}
-			h.authService.RecordSuccessfulLogin(c.Request.Context(), user.ID)
-			clearOAuthPendingSessionCookie(c, secure)
-			clearOAuthPendingBrowserCookie(c, secure)
-			redirectTokenPair(tokenPair, redirectTo)
+			if err := h.createOAuthPendingSession(c, oauthPendingSessionPayload{
+				Intent: oauthIntentLogin, Identity: identity, TargetUserID: &user.ID,
+				ResolvedEmail: syntheticEmail, RedirectTo: redirectTo, BrowserSessionKey: browserSessionKey,
+				UpstreamIdentityClaims: claims, CompletionResponse: map[string]any{"redirect": redirectTo},
+			}); err != nil {
+				redirectError("session_error", "failed to continue oauth login", "")
+				return
+			}
+			redirectFrontend()
 			return
 		}
 		if !errors.Is(registerErr, service.ErrOAuthInvitationRequired) && !errors.Is(registerErr, service.ErrRegistrationDisabled) {
@@ -468,6 +479,18 @@ func feishuSyntheticUsername(clientID, subject string) string {
 	return "feishu_" + feishuSyntheticIdentitySlug(clientID, subject)[:16]
 }
 
+func readFeishuOAuthAffiliateCode(c *gin.Context) string {
+	code, err := readCookieDecoded(c, feishuOAuthAffiliateCookieName)
+	if err != nil {
+		return ""
+	}
+	code = strings.TrimSpace(code)
+	if len(code) > service.AffiliateCodeMaxLength {
+		return ""
+	}
+	return code
+}
+
 func (h *AuthHandler) findFeishuCompatEmailUser(ctx context.Context, email string) (*dbent.User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" ||
@@ -512,6 +535,7 @@ func (h *AuthHandler) createFeishuOAuthChoicePendingSession(
 		completion["email"] = resolvedEmail
 		completion["existing_account_email"] = resolvedEmail
 		completion["existing_account_bindable"] = true
+		completion["create_account_allowed"] = false
 		completion["choice_reason"] = "compat_email_match"
 	}
 	if (emailVerificationRequired || forceEmailOnSignup) && compatEmailUser == nil {

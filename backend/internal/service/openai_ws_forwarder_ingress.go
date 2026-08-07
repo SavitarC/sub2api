@@ -69,7 +69,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	// 内所有帧的 evaluateOpenAIFastPolicy 调用复用同一份快照，避免每帧
 	// 进入 DB / settingRepo。Trade-off 见 withOpenAIFastPolicyContext 注释。
 	if s.settingService != nil {
-		if settings, err := s.settingService.GetOpenAIFastPolicySettings(ctx); err == nil && settings != nil {
+		if settings, err := s.settingService.getOpenAIFastPolicySettingsCached(ctx); err == nil && settings != nil {
 			ctx = withOpenAIFastPolicyContext(ctx, settings)
 		}
 	}

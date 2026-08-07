@@ -1,34 +1,68 @@
-ALTER TABLE users
-    DROP CONSTRAINT IF EXISTS users_signup_source_check;
+-- Add replacement constraints without scanning the existing tables. The old
+-- constraints stay active until the replacements have been validated.
+SET LOCAL lock_timeout = '5s';
 
-ALTER TABLE users
-    ADD CONSTRAINT users_signup_source_check
-    CHECK (signup_source IN ('email', 'linuxdo', 'wechat', 'oidc', 'github', 'google', 'dingtalk', 'feishu'));
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'users_signup_source_check_feishu'
+          AND conrelid = 'users'::regclass
+    ) THEN
+        ALTER TABLE users
+            ADD CONSTRAINT users_signup_source_check_feishu
+            CHECK (signup_source IN ('email', 'linuxdo', 'wechat', 'oidc', 'github', 'google', 'dingtalk', 'feishu'))
+            NOT VALID;
+    END IF;
+END $$;
 
-ALTER TABLE auth_identities
-    DROP CONSTRAINT IF EXISTS auth_identities_provider_type_check;
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'auth_identities_provider_type_check_feishu'
+          AND conrelid = 'auth_identities'::regclass
+    ) THEN
+        ALTER TABLE auth_identities
+            ADD CONSTRAINT auth_identities_provider_type_check_feishu
+            CHECK (provider_type IN ('email', 'linuxdo', 'wechat', 'oidc', 'github', 'google', 'dingtalk', 'feishu'))
+            NOT VALID;
+    END IF;
+END $$;
 
-ALTER TABLE auth_identities
-    ADD CONSTRAINT auth_identities_provider_type_check
-    CHECK (provider_type IN ('email', 'linuxdo', 'wechat', 'oidc', 'github', 'google', 'dingtalk', 'feishu'));
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'auth_identity_channels_provider_type_check_feishu'
+          AND conrelid = 'auth_identity_channels'::regclass
+    ) THEN
+        ALTER TABLE auth_identity_channels
+            ADD CONSTRAINT auth_identity_channels_provider_type_check_feishu
+            CHECK (provider_type IN ('email', 'linuxdo', 'wechat', 'oidc', 'github', 'google', 'dingtalk', 'feishu'))
+            NOT VALID;
+    END IF;
+END $$;
 
-ALTER TABLE auth_identity_channels
-    DROP CONSTRAINT IF EXISTS auth_identity_channels_provider_type_check;
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'pending_auth_sessions_provider_type_check_feishu'
+          AND conrelid = 'pending_auth_sessions'::regclass
+    ) THEN
+        ALTER TABLE pending_auth_sessions
+            ADD CONSTRAINT pending_auth_sessions_provider_type_check_feishu
+            CHECK (provider_type IN ('email', 'linuxdo', 'wechat', 'oidc', 'github', 'google', 'dingtalk', 'feishu'))
+            NOT VALID;
+    END IF;
+END $$;
 
-ALTER TABLE auth_identity_channels
-    ADD CONSTRAINT auth_identity_channels_provider_type_check
-    CHECK (provider_type IN ('email', 'linuxdo', 'wechat', 'oidc', 'github', 'google', 'dingtalk', 'feishu'));
-
-ALTER TABLE pending_auth_sessions
-    DROP CONSTRAINT IF EXISTS pending_auth_sessions_provider_type_check;
-
-ALTER TABLE pending_auth_sessions
-    ADD CONSTRAINT pending_auth_sessions_provider_type_check
-    CHECK (provider_type IN ('email', 'linuxdo', 'wechat', 'oidc', 'github', 'google', 'dingtalk', 'feishu'));
-
-ALTER TABLE user_provider_default_grants
-    DROP CONSTRAINT IF EXISTS user_provider_default_grants_provider_type_check;
-
-ALTER TABLE user_provider_default_grants
-    ADD CONSTRAINT user_provider_default_grants_provider_type_check
-    CHECK (provider_type IN ('email', 'linuxdo', 'wechat', 'oidc', 'github', 'google', 'dingtalk', 'feishu'));
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'user_provider_default_grants_provider_type_check_feishu'
+          AND conrelid = 'user_provider_default_grants'::regclass
+    ) THEN
+        ALTER TABLE user_provider_default_grants
+            ADD CONSTRAINT user_provider_default_grants_provider_type_check_feishu
+            CHECK (provider_type IN ('email', 'linuxdo', 'wechat', 'oidc', 'github', 'google', 'dingtalk', 'feishu'))
+            NOT VALID;
+    END IF;
+END $$;

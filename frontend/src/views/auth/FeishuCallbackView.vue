@@ -33,6 +33,14 @@
           <p class="font-medium">{{ t('auth.feishu.error.title') }}</p>
           <p class="mt-1">{{ errorMessage }}</p>
         </div>
+        <button
+          v-if="canRetryPendingExchange"
+          class="btn btn-primary w-full"
+          data-testid="feishu-callback-retry"
+          @click="retryPendingExchange"
+        >
+          {{ t('auth.feishu.retry') }}
+        </button>
         <router-link to="/login" class="btn btn-secondary w-full">
           {{ t('auth.feishu.backToLogin') }}
         </router-link>
@@ -94,6 +102,7 @@
           >
             {{ isSubmitting ? t('common.processing') : t('auth.continue') }}
           </button>
+          <p v-if="actionError" class="text-sm text-red-600 dark:text-red-400">{{ actionError }}</p>
         </template>
 
         <template v-else-if="flowStep === 'choose'">
@@ -234,7 +243,6 @@ import {
   login2FA,
   persistOAuthTokenContext,
   type OAuthAdoptionDecision,
-  type OAuthTokenResponse,
   type PendingOAuthExchangeResponse
 } from '@/api/auth'
 import { useAppStore, useAuthStore } from '@/stores'
@@ -270,6 +278,7 @@ const isProcessing = ref(true)
 const isSubmitting = ref(false)
 const errorMessage = ref('')
 const actionError = ref('')
+const canRetryPendingExchange = ref(false)
 const canCreateAccount = ref(true)
 const flowStep = ref<FlowStep>('none')
 const redirectTo = ref('/dashboard')
@@ -288,28 +297,6 @@ const totpEmailMasked = ref('')
 function parseFragmentParams(): URLSearchParams {
   const raw = typeof window !== 'undefined' ? window.location.hash : ''
   return new URLSearchParams(raw.startsWith('#') ? raw.slice(1) : raw)
-}
-
-function readFragmentLogin(params: URLSearchParams): OAuthTokenResponse | null {
-  const accessToken = params.get('access_token')?.trim() || ''
-  if (!accessToken) {
-    return null
-  }
-
-  const completion: OAuthTokenResponse = { access_token: accessToken }
-  const refreshToken = params.get('refresh_token')?.trim() || ''
-  if (refreshToken) {
-    completion.refresh_token = refreshToken
-  }
-  const expiresIn = Number.parseInt(params.get('expires_in')?.trim() || '', 10)
-  if (Number.isFinite(expiresIn) && expiresIn > 0) {
-    completion.expires_in = expiresIn
-  }
-  const tokenType = params.get('token_type')?.trim() || ''
-  if (tokenType) {
-    completion.token_type = tokenType
-  }
-  return completion
 }
 
 function sanitizeRedirectPath(value: unknown, fallback = '/dashboard'): string {
@@ -417,6 +404,20 @@ function requestErrorMessage(error: unknown, fallback: string): string {
   )
 }
 
+function isRetryablePendingExchangeError(error: unknown): boolean {
+  const typed = error as {
+    status?: number
+    code?: string
+    isAxiosError?: boolean
+    response?: { status?: number }
+  }
+  const status = typed?.status ?? typed?.response?.status
+  if (typeof status !== 'number') {
+    return typed?.isAxiosError === true && typed?.code !== 'ERR_CANCELED'
+  }
+  return status === 0 || status === 408 || status === 425 || status === 429 || status >= 500
+}
+
 function localizedCallbackError(code: string, description?: string): string {
   const normalized = code.trim().toLowerCase()
   const key = `auth.feishu.error.${normalized}`
@@ -515,10 +516,37 @@ async function continueAfterAdoption(): Promise<void> {
   try {
     await applyCompletion(await exchangePendingOAuthCompletion(currentAdoptionDecision()))
   } catch (error) {
-    errorMessage.value = requestErrorMessage(error, t('auth.loginFailed'))
+    const message = requestErrorMessage(error, t('auth.loginFailed'))
+    if (isRetryablePendingExchangeError(error)) {
+      actionError.value = message
+    } else {
+      authStore.clearPendingAuthSession()
+      errorMessage.value = message
+    }
   } finally {
     isSubmitting.value = false
   }
+}
+
+async function exchangeBrowserBoundCompletion(): Promise<void> {
+  isProcessing.value = true
+  errorMessage.value = ''
+  canRetryPendingExchange.value = false
+  try {
+    await applyCompletion(await exchangePendingOAuthCompletion() as FeishuPendingCompletion)
+  } catch (error) {
+    const retryable = isRetryablePendingExchangeError(error)
+    if (!retryable) {
+      authStore.clearPendingAuthSession()
+    }
+    canRetryPendingExchange.value = retryable
+    errorMessage.value = requestErrorMessage(error, t('auth.loginFailed'))
+    isProcessing.value = false
+  }
+}
+
+async function retryPendingExchange(): Promise<void> {
+  await exchangeBrowserBoundCompletion()
 }
 
 async function createAccount(payload: PendingOAuthCreateAccountPayload): Promise<void> {
@@ -587,7 +615,6 @@ async function submitTotp(): Promise<void> {
 
 onMounted(async () => {
   const fragment = parseFragmentParams()
-  const fragmentLogin = readFragmentLogin(fragment)
   redirectTo.value = sanitizeRedirectPath(
     fragment.get('redirect') || (route.query.redirect as string | undefined)
   )
@@ -598,34 +625,12 @@ onMounted(async () => {
     fragment.get('error_message') ||
     (typeof route.query.error_description === 'string' ? route.query.error_description : '')
 
-  if (fragmentLogin) {
-    try {
-      persistOAuthTokenContext(fragmentLogin)
-      await authStore.setToken(fragmentLogin.access_token)
-      authStore.clearPendingAuthSession()
-      clearAllAffiliateReferralCodes()
-      appStore.showSuccess(t('auth.loginSuccess'))
-      await router.replace(redirectTo.value)
-    } catch (error) {
-      authStore.clearPendingAuthSession()
-      errorMessage.value = requestErrorMessage(error, t('auth.loginFailed'))
-      isProcessing.value = false
-    }
-    return
-  }
-
   if (callbackError) {
     errorMessage.value = localizedCallbackError(callbackError, callbackDescription)
     isProcessing.value = false
     return
   }
 
-  try {
-    await applyCompletion(await exchangePendingOAuthCompletion() as FeishuPendingCompletion)
-  } catch (error) {
-    authStore.clearPendingAuthSession()
-    errorMessage.value = requestErrorMessage(error, t('auth.loginFailed'))
-    isProcessing.value = false
-  }
+  await exchangeBrowserBoundCompletion()
 })
 </script>

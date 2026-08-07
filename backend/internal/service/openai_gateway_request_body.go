@@ -905,13 +905,17 @@ func (s *OpenAIGatewayService) evaluateOpenAIFastPolicy(ctx context.Context, acc
 	tier := strings.ToLower(strings.TrimSpace(serviceTier))
 	settings := openAIFastPolicySettingsFromContext(ctx)
 	if settings == nil {
-		fetched, err := s.settingService.GetOpenAIFastPolicySettings(ctx)
+		fetched, err := s.settingService.getOpenAIFastPolicySettingsCached(ctx)
 		if err != nil || fetched == nil {
 			return BetaPolicyActionPass, ""
 		}
 		settings = fetched
 	}
 	return evaluateOpenAIFastPolicyWithSettings(settings, openAIFastPolicyUserID(ctx), account, model, tier)
+}
+
+func openAIFastPolicyActionAppliesWithoutTier(action string) bool {
+	return action == BetaPolicyActionBlock || action == OpenAIFastPolicyActionForcePriority
 }
 
 // evaluateOpenAIFastPolicyWithSettings is the pure-function core extracted so
@@ -1031,7 +1035,7 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToBody(ctx context.Context, 
 	rawTier := gjson.GetBytes(body, "service_tier").String()
 	normTier := normalizedOpenAIServiceTierValue(rawTier)
 	action, errMsg := s.evaluateOpenAIFastPolicy(ctx, account, model, normTier)
-	if normTier == "" && action != OpenAIFastPolicyActionForcePriority {
+	if normTier == "" && !openAIFastPolicyActionAppliesWithoutTier(action) {
 		return body, nil
 	}
 	switch action {
@@ -1139,7 +1143,7 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToWSResponseCreate(
 	rawTier := gjson.GetBytes(frame, "service_tier").String()
 	normTier := normalizedOpenAIServiceTierValue(rawTier)
 	action, errMsg := s.evaluateOpenAIFastPolicy(ctx, account, model, normTier)
-	if normTier == "" && action != OpenAIFastPolicyActionForcePriority {
+	if normTier == "" && !openAIFastPolicyActionAppliesWithoutTier(action) {
 		return frame, nil, nil
 	}
 	switch action {

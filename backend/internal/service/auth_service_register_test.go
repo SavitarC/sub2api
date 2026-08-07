@@ -743,6 +743,30 @@ func TestAuthService_LoginOrRegisterOAuthWithTokenPair_UsesLinuxDoAuthSourceDefa
 	require.Equal(t, 14, assigner.calls[0].ValidityDays)
 }
 
+func TestAuthService_LoginOrRegisterOAuthUserWithPromoCode_DoesNotRequireRefreshTokenCache(t *testing.T) {
+	repo := &userRepoStub{nextID: 62}
+	service := newAuthService(repo, map[string]string{
+		SettingKeyRegistrationEnabled: "true",
+	}, nil, nil)
+	require.Nil(t, service.refreshTokenCache)
+
+	user, err := service.LoginOrRegisterOAuthUserWithPromoCode(
+		context.Background(),
+		"feishu-123@feishu-connect.invalid",
+		"feishu_user",
+		"",
+		"",
+		"",
+		"feishu",
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, user)
+	require.Equal(t, int64(62), user.ID)
+	require.Equal(t, "feishu", user.SignupSource)
+	require.Len(t, repo.created, 1)
+}
+
 func TestAuthService_LoginOrRegisterOAuthWithTokenPair_ExistingUserDoesNotGrantAgain(t *testing.T) {
 	existing := &User{
 		ID:           88,

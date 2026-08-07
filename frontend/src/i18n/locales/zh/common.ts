@@ -334,6 +334,7 @@ export default {
       callbackHint: '如果页面未自动跳转，请返回登录页重试。',
       callbackMissingToken: '登录信息缺失，请返回重试。',
       backToLogin: '返回登录',
+      retry: '重试',
       completeRegistrationFailed: '注册失败，请检查账户信息后重试。',
       error: {
         title: '飞书登录失败',

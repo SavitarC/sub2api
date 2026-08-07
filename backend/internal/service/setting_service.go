@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -61,6 +62,14 @@ type SettingService struct {
 	openAICodexVersionSF        singleflight.Group
 	codexRestrictionPolicyCache atomic.Value // *cachedCodexRestrictionPolicy
 	codexRestrictionPolicySF    singleflight.Group
+
+	// openAIFastPolicyCache keeps policy evaluation off the request-path DB.
+	// The snapshot is immutable after publication; SetOpenAIFastPolicySettings
+	// replaces it immediately while the TTL bounds cross-node staleness.
+	openAIFastPolicyCache   atomic.Pointer[cachedOpenAIFastPolicySettings]
+	openAIFastPolicySF      singleflight.Group
+	openAIFastPolicyWriteMu sync.Mutex
+	openAIFastPolicyRefresh atomic.Bool
 
 	cyberSessionBlockRuntimeCache atomic.Value // *cachedCyberSessionBlockRuntime
 	cyberSessionBlockRuntimeSF    singleflight.Group

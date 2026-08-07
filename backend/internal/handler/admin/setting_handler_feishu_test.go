@@ -47,6 +47,60 @@ func TestSettingsPUT_FeishuRoundTripAndSecretPreservation(t *testing.T) {
 		require.Equal(t, http.StatusOK, rec.Code)
 	})
 	require.Equal(t, "secret_mock", repo.values[service.SettingKeyFeishuConnectClientSecret])
+	require.NotContains(t, repo.lastUpdates, service.SettingKeyFeishuConnectClientSecret)
+
+	changed := diffSettings(
+		&service.SystemSettings{FeishuConnectClientSecret: "secret_mock"},
+		&service.SystemSettings{},
+		nil,
+		nil,
+		UpdateSettingsRequest{FeishuConnectClientSecret: ""},
+	)
+	require.NotContains(t, changed, "feishu_connect_client_secret")
+}
+
+func TestSettingsPUT_FeishuConfigFallbackSecretIsNeverPersisted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, tc := range []struct {
+		name          string
+		includeSecret bool
+		secret        string
+	}{
+		{name: "omitted"},
+		{name: "empty", includeSecret: true, secret: ""},
+		{name: "whitespace", includeSecret: true, secret: "   "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &settingHandlerRepoStub{values: map[string]string{}}
+			cfg := &config.Config{
+				Default: config.DefaultConfig{UserConcurrency: 5},
+				Feishu: config.FeishuConnectConfig{
+					Enabled:      true,
+					ClientID:     "cli_config",
+					ClientSecret: "secret_from_config",
+					RedirectURL:  "https://api.example.com/api/v1/auth/oauth/feishu/callback",
+				},
+			}
+			svc := service.NewSettingService(repo, cfg)
+			h := NewSettingHandler(svc, nil, nil, nil, nil, nil, nil)
+			body := map[string]any{
+				"feishu_connect_enabled":      true,
+				"feishu_connect_client_id":    "cli_config",
+				"feishu_connect_redirect_url": "https://api.example.com/api/v1/auth/oauth/feishu/callback",
+			}
+			if tc.includeSecret {
+				body["feishu_connect_client_secret"] = tc.secret
+			}
+
+			putFeishuSettings(t, h, body, func(rec *httptest.ResponseRecorder) {
+				require.Equal(t, http.StatusOK, rec.Code)
+			})
+
+			require.NotContains(t, repo.lastUpdates, service.SettingKeyFeishuConnectClientSecret)
+			require.NotContains(t, repo.values, service.SettingKeyFeishuConnectClientSecret)
+		})
+	}
 }
 
 func TestSettingsPUT_FeishuEnabledRequiresAbsoluteRedirectURL(t *testing.T) {

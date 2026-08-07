@@ -34,15 +34,21 @@ func TestFeishuOAuthCallback_MockedFreshAccountCompletesTokenAndIdentity(t *test
 	handler.FeishuOAuthCallback(c)
 
 	require.Equal(t, http.StatusFound, recorder.Code)
-	redirect := parseOAuthRedirectFragment(t, recorder.Header().Get("Location"))
-	require.Equal(t, "/dashboard", redirect.Get("redirect"))
-	require.NotEmpty(t, redirect.Get("access_token"))
-	require.NotEmpty(t, redirect.Get("refresh_token"))
-
-	claims, err := handler.authService.ValidateToken(redirect.Get("access_token"))
-	require.NoError(t, err)
+	require.Equal(t, "/auth/feishu/callback", recorder.Header().Get("Location"))
+	sessionCookie := findCookie(recorder.Result().Cookies(), oauthPendingSessionCookieName)
+	require.NotNil(t, sessionCookie)
 
 	ctx := context.Background()
+	session, err := client.PendingAuthSession.Query().
+		Where(pendingauthsession.SessionTokenEQ(decodeCookieValueForTest(t, sessionCookie.Value))).
+		Only(ctx)
+	require.NoError(t, err)
+	require.Equal(t, oauthIntentLogin, session.Intent)
+	require.NotNil(t, session.TargetUserID)
+	require.Equal(t, "feishu", session.ProviderType)
+	require.Equal(t, "feishu:cli_mock", session.ProviderKey)
+	require.Equal(t, "ou_mock_fresh", session.ProviderSubject)
+
 	identity, err := client.AuthIdentity.Query().
 		Where(
 			authidentity.ProviderTypeEQ("feishu"),
@@ -51,24 +57,116 @@ func TestFeishuOAuthCallback_MockedFreshAccountCompletesTokenAndIdentity(t *test
 		).
 		Only(ctx)
 	require.NoError(t, err)
-	require.Equal(t, identity.UserID, claims.UserID)
+	require.Equal(t, identity.UserID, *session.TargetUserID)
 
 	userEntity, err := client.User.Get(ctx, identity.UserID)
 	require.NoError(t, err)
 	require.Equal(t, feishuSyntheticEmail("cli_mock", "ou_mock_fresh"), userEntity.Email)
 	require.Equal(t, "feishu", userEntity.SignupSource)
 
-	pendingCount, err := client.PendingAuthSession.Query().Count(ctx)
+	exchangeRecorder := httptest.NewRecorder()
+	exchangeContext, _ := gin.CreateTestContext(exchangeRecorder)
+	exchangeRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/pending/exchange", nil)
+	exchangeRequest.AddCookie(&http.Cookie{Name: oauthPendingSessionCookieName, Value: sessionCookie.Value})
+	exchangeRequest.AddCookie(encodedCookie(oauthPendingBrowserCookieName, "browser-fresh"))
+	exchangeContext.Request = exchangeRequest
+
+	handler.ExchangePendingOAuthCompletion(exchangeContext)
+
+	require.Equal(t, http.StatusOK, exchangeRecorder.Code)
+	payload := decodeJSONResponseData(t, exchangeRecorder)
+	accessToken, ok := payload["access_token"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, accessToken)
+	require.NotEmpty(t, payload["refresh_token"])
+	require.Equal(t, "/dashboard", payload["redirect"])
+	claims, err := handler.authService.ValidateToken(accessToken)
 	require.NoError(t, err)
-	require.Zero(t, pendingCount)
+	require.Equal(t, identity.UserID, claims.UserID)
+
+	consumedSession, err := client.PendingAuthSession.Get(ctx, session.ID)
+	require.NoError(t, err)
+	require.NotNil(t, consumedSession.ConsumedAt)
 	for _, name := range []string{
 		feishuOAuthStateCookieName,
 		feishuOAuthVerifierCookieName,
 		feishuOAuthRedirectCookieName,
 		feishuOAuthIntentCookieName,
+		feishuOAuthAffiliateCookieName,
 	} {
 		requireCookieCleared(t, recorder, name)
 	}
+}
+
+func TestFeishuOAuthCallback_FreshAccountRequiresMatchingBrowserSession(t *testing.T) {
+	server := newMockFeishuOAuthServer(t, "ou_mock_browser_bound", "fresh@example.com")
+	defer server.Close()
+
+	handler, client := newFeishuOAuthHandlerAndClient(t, false, mockFeishuConfig(server.URL))
+	t.Cleanup(func() { _ = client.Close() })
+
+	callbackRecorder := httptest.NewRecorder()
+	callbackContext, _ := gin.CreateTestContext(callbackRecorder)
+	callbackContext.Request = newFeishuCallbackRequest("code-browser", "state-browser", "browser-owner")
+	handler.FeishuOAuthCallback(callbackContext)
+
+	sessionCookie := findCookie(callbackRecorder.Result().Cookies(), oauthPendingSessionCookieName)
+	require.NotNil(t, sessionCookie)
+	sessionToken := decodeCookieValueForTest(t, sessionCookie.Value)
+
+	exchangeRecorder := httptest.NewRecorder()
+	exchangeContext, _ := gin.CreateTestContext(exchangeRecorder)
+	exchangeRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/pending/exchange", nil)
+	exchangeRequest.AddCookie(&http.Cookie{Name: oauthPendingSessionCookieName, Value: sessionCookie.Value})
+	exchangeRequest.AddCookie(encodedCookie(oauthPendingBrowserCookieName, "browser-attacker"))
+	exchangeContext.Request = exchangeRequest
+	handler.ExchangePendingOAuthCompletion(exchangeContext)
+
+	require.NotEqual(t, http.StatusOK, exchangeRecorder.Code)
+	require.NotContains(t, exchangeRecorder.Body.String(), "access_token")
+	session, err := client.PendingAuthSession.Query().
+		Where(pendingauthsession.SessionTokenEQ(sessionToken)).
+		Only(context.Background())
+	require.NoError(t, err)
+	require.Nil(t, session.ConsumedAt)
+}
+
+func TestFeishuOAuthCallback_FreshAccountBindsAffiliateFromStartCookie(t *testing.T) {
+	server := newMockFeishuOAuthServer(t, "ou_mock_affiliate", "fresh@example.com")
+	defer server.Close()
+
+	affiliateRepo := newOAuthEmailAffiliateRepoStub(map[string]int64{"AFF123": 1001})
+	handler, client := newOAuthPendingFlowTestHandlerWithDependencies(t, oauthPendingFlowTestHandlerOptions{
+		settingValues: map[string]string{
+			service.SettingKeyAffiliateEnabled: "true",
+		},
+		affiliateFactory: func(_ *dbent.Client, settingSvc *service.SettingService) *service.AffiliateService {
+			return service.NewAffiliateService(affiliateRepo, settingSvc, nil, nil)
+		},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	handler.settingSvc = nil
+	handler.cfg = &config.Config{
+		JWT: config.JWTConfig{
+			Secret:                   "test-secret",
+			ExpireHour:               1,
+			AccessTokenExpireMinutes: 60,
+			RefreshTokenExpireDays:   7,
+		},
+		Feishu: mockFeishuConfig(server.URL),
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = newFeishuCallbackRequest("code-affiliate", "state-affiliate", "browser-affiliate")
+	c.Request.AddCookie(encodedCookie(feishuOAuthAffiliateCookieName, "AFF123"))
+	handler.FeishuOAuthCallback(c)
+
+	require.Equal(t, http.StatusFound, recorder.Code)
+	require.Len(t, affiliateRepo.bindCalls, 1)
+	require.Equal(t, int64(1001), affiliateRepo.bindCalls[0].inviterID)
+	require.Positive(t, affiliateRepo.bindCalls[0].userID)
+	requireCookieCleared(t, recorder, feishuOAuthAffiliateCookieName)
 }
 
 func TestFeishuOAuthCallback_MockedExistingIdentityExchangesPendingForToken(t *testing.T) {
@@ -142,6 +240,78 @@ func TestFeishuOAuthCallback_MockedExistingIdentityExchangesPendingForToken(t *t
 	consumedSession, err := client.PendingAuthSession.Get(ctx, session.ID)
 	require.NoError(t, err)
 	require.NotNil(t, consumedSession.ConsumedAt)
+}
+
+func TestFeishuOAuthCallback_CompatEmailChoiceCannotBindThroughExchange(t *testing.T) {
+	server := newMockFeishuOAuthServer(t, "ou_mock_compat", "owner@example.com")
+	defer server.Close()
+
+	handler, client := newFeishuOAuthHandlerAndClient(t, false, mockFeishuConfig(server.URL))
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx := context.Background()
+	existingUser, err := client.User.Create().
+		SetEmail("owner@example.com").
+		SetUsername("existing-owner").
+		SetPasswordHash("hash").
+		SetRole(service.RoleUser).
+		SetStatus(service.StatusActive).
+		Save(ctx)
+	require.NoError(t, err)
+
+	callbackRecorder := httptest.NewRecorder()
+	callbackContext, _ := gin.CreateTestContext(callbackRecorder)
+	callbackContext.Request = newFeishuCallbackRequest("code-compat", "state-compat", "browser-compat")
+	handler.FeishuOAuthCallback(callbackContext)
+
+	require.Equal(t, http.StatusFound, callbackRecorder.Code)
+	sessionCookie := findCookie(callbackRecorder.Result().Cookies(), oauthPendingSessionCookieName)
+	require.NotNil(t, sessionCookie)
+	session, err := client.PendingAuthSession.Query().
+		Where(pendingauthsession.SessionTokenEQ(decodeCookieValueForTest(t, sessionCookie.Value))).
+		Only(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, session.TargetUserID)
+	require.Equal(t, existingUser.ID, *session.TargetUserID)
+	completion, ok := readCompletionResponse(session.LocalFlowState)
+	require.True(t, ok)
+	require.Equal(t, oauthPendingChoiceStep, completion["step"])
+	require.Equal(t, false, completion["create_account_allowed"])
+
+	exchangeRecorder := httptest.NewRecorder()
+	exchangeContext, _ := gin.CreateTestContext(exchangeRecorder)
+	exchangeRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/oauth/pending/exchange",
+		bytes.NewBufferString(`{"adopt_display_name":false,"adopt_avatar":false}`),
+	)
+	exchangeRequest.Header.Set("Content-Type", "application/json")
+	exchangeRequest.AddCookie(&http.Cookie{Name: oauthPendingSessionCookieName, Value: sessionCookie.Value})
+	exchangeRequest.AddCookie(encodedCookie(oauthPendingBrowserCookieName, "browser-compat"))
+	exchangeContext.Request = exchangeRequest
+	handler.ExchangePendingOAuthCompletion(exchangeContext)
+
+	require.Equal(t, http.StatusOK, exchangeRecorder.Code)
+	payload := decodeJSONResponseData(t, exchangeRecorder)
+	require.Equal(t, oauthPendingChoiceStep, payload["step"])
+	require.Equal(t, false, payload["create_account_allowed"])
+	require.NotContains(t, payload, "access_token")
+
+	identityCount, err := client.AuthIdentity.Query().
+		Where(
+			authidentity.ProviderTypeEQ("feishu"),
+			authidentity.ProviderKeyEQ("feishu:cli_mock"),
+			authidentity.ProviderSubjectEQ("ou_mock_compat"),
+		).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Zero(t, identityCount)
+	decisionCount, err := client.IdentityAdoptionDecision.Query().Count(ctx)
+	require.NoError(t, err)
+	require.Zero(t, decisionCount)
+	storedSession, err := client.PendingAuthSession.Get(ctx, session.ID)
+	require.NoError(t, err)
+	require.Nil(t, storedSession.ConsumedAt)
 }
 
 func TestFeishuOAuthCallback_MockedCurrentUserBindCompletesIdentityOwnership(t *testing.T) {
@@ -346,7 +516,7 @@ func TestFeishuOAuthStart_DefaultPKCEAndFiveMinuteCookies(t *testing.T) {
 	h := &AuthHandler{cfg: &config.Config{Feishu: cfg}}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/feishu/start?redirect=/settings/profile", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/feishu/start?redirect=/settings/profile&aff_code=AFF123", nil)
 
 	h.FeishuOAuthStart(c)
 
@@ -362,13 +532,15 @@ func TestFeishuOAuthStart_DefaultPKCEAndFiveMinuteCookies(t *testing.T) {
 	require.Equal(t, "S256", location.Query().Get("code_challenge_method"))
 	require.NotContains(t, location.Query(), "scope")
 
-	for _, name := range []string{feishuOAuthStateCookieName, feishuOAuthVerifierCookieName, feishuOAuthRedirectCookieName, feishuOAuthIntentCookieName} {
+	for _, name := range []string{feishuOAuthStateCookieName, feishuOAuthVerifierCookieName, feishuOAuthRedirectCookieName, feishuOAuthIntentCookieName, feishuOAuthAffiliateCookieName} {
 		cookie := findCookie(recorder.Result().Cookies(), name)
 		require.NotNil(t, cookie, name)
 		require.Equal(t, feishuOAuthCookiePath, cookie.Path)
 		require.Equal(t, feishuOAuthCookieMaxAgeSec, cookie.MaxAge)
 		require.True(t, cookie.HttpOnly)
 	}
+	affiliateCookie := findCookie(recorder.Result().Cookies(), feishuOAuthAffiliateCookieName)
+	require.Equal(t, "AFF123", decodeCookieValueForTest(t, affiliateCookie.Value))
 }
 
 func TestFeishuOAuthCallback_InvalidStateDoesNotCallUpstream(t *testing.T) {
@@ -443,6 +615,7 @@ func TestClearOAuthLogoutCookies_ClearsFeishuFlow(t *testing.T) {
 		feishuOAuthRedirectCookieName,
 		feishuOAuthIntentCookieName,
 		feishuOAuthBindUserCookieName,
+		feishuOAuthAffiliateCookieName,
 	} {
 		cookie := findCookie(recorder.Result().Cookies(), name)
 		require.NotNil(t, cookie, name)

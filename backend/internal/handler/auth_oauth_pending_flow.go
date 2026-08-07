@@ -350,6 +350,12 @@ func pendingSessionRequiresBindLogin(payload map[string]any) bool {
 	return strings.EqualFold(strings.TrimSpace(pendingSessionStringValue(payload, "step")), "bind_login_required")
 }
 
+// Choice sessions only describe the next authenticated action. Adoption fields sent to the
+// generic exchange endpoint must never turn an email match into an identity binding.
+func pendingSessionRequiresAccountChoice(payload map[string]any) bool {
+	return strings.EqualFold(strings.TrimSpace(pendingSessionStringValue(payload, "step")), oauthPendingChoiceStep)
+}
+
 func pendingOAuthCompletionCanIssueTokenPair(session *dbent.PendingAuthSession, payload map[string]any) bool {
 	if session == nil {
 		return false
@@ -1516,6 +1522,7 @@ func clearOAuthLogoutCookies(c *gin.Context) {
 	clearFeishuOAuthCookie(c, feishuOAuthRedirectCookieName, secureCookie)
 	clearFeishuOAuthCookie(c, feishuOAuthIntentCookieName, secureCookie)
 	clearFeishuOAuthCookie(c, feishuOAuthBindUserCookieName, secureCookie)
+	clearFeishuOAuthCookie(c, feishuOAuthAffiliateCookieName, secureCookie)
 
 	oidcClearCookie(c, oidcOAuthStateCookieName, secureCookie)
 	oidcClearCookie(c, oidcOAuthVerifierCookie, secureCookie)
@@ -1582,6 +1589,7 @@ func pendingOAuthChoiceCompletionResponse(session *dbent.PendingAuthSession, ema
 		"force_email_on_signup":     true,
 		"email_binding_required":    true,
 		"existing_account_bindable": true,
+		"create_account_allowed":    false,
 	})
 	if email = strings.TrimSpace(email); email != "" {
 		response["email"] = email
@@ -1984,6 +1992,10 @@ func (h *AuthHandler) ExchangePendingOAuthCompletion(c *gin.Context) {
 		delete(payload, "adoption_required")
 	}
 
+	if pendingSessionRequiresAccountChoice(payload) {
+		response.Success(c, payload)
+		return
+	}
 	if pendingSessionWantsInvitation(payload) {
 		if adoptionDecision.hasDecision() {
 			decision, err := h.upsertPendingOAuthAdoptionDecision(c, session.ID, adoptionDecision)
@@ -2032,19 +2044,24 @@ func (h *AuthHandler) ExchangePendingOAuthCompletion(c *gin.Context) {
 		return
 	}
 
+	var tokenPair *service.TokenPair
+	if canIssueTokenPair {
+		tokenPair, err = h.authService.GenerateTokenPair(c.Request.Context(), loginUser, "")
+		if err != nil {
+			response.InternalError(c, "Failed to generate token pair")
+			return
+		}
+	}
+
 	if _, err := svc.ConsumeBrowserSession(c.Request.Context(), sessionToken, browserSessionKey); err != nil {
-		clearCookies()
+		if tokenPair != nil {
+			_ = h.authService.RevokeRefreshToken(c.Request.Context(), tokenPair.RefreshToken)
+		}
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	if canIssueTokenPair {
-		tokenPair, err := h.authService.GenerateTokenPair(c.Request.Context(), loginUser, "")
-		if err != nil {
-			clearCookies()
-			response.InternalError(c, "Failed to generate token pair")
-			return
-		}
+	if tokenPair != nil {
 		h.authService.RecordSuccessfulLogin(c.Request.Context(), loginUser.ID)
 		payload["access_token"] = tokenPair.AccessToken
 		payload["refresh_token"] = tokenPair.RefreshToken

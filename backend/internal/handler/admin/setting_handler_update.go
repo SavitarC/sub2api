@@ -840,11 +840,15 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
-	// Feishu OAuth 参数验证
+	// Feishu OAuth 参数验证。client_secret 留空表示保留已有值：
+	// 只用有效的旧值做启用校验，不回填 request，避免误记密钥轮换或把 config/env fallback 落库。
+	req.FeishuConnectClientID = strings.TrimSpace(req.FeishuConnectClientID)
+	req.FeishuConnectClientSecret = strings.TrimSpace(req.FeishuConnectClientSecret)
+	req.FeishuConnectRedirectURL = strings.TrimSpace(req.FeishuConnectRedirectURL)
+	if req.FeishuConnectClientSecret == "" {
+		omitted[service.SettingKeyFeishuConnectClientSecret] = struct{}{}
+	}
 	if req.FeishuConnectEnabled {
-		req.FeishuConnectClientID = strings.TrimSpace(req.FeishuConnectClientID)
-		req.FeishuConnectClientSecret = strings.TrimSpace(req.FeishuConnectClientSecret)
-		req.FeishuConnectRedirectURL = strings.TrimSpace(req.FeishuConnectRedirectURL)
 		if req.FeishuConnectClientID == "" {
 			response.BadRequest(c, "Feishu Client ID is required when enabled")
 			return
@@ -862,7 +866,6 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				response.BadRequest(c, "Feishu Client Secret is required when enabled")
 				return
 			}
-			req.FeishuConnectClientSecret = previousSettings.FeishuConnectClientSecret
 		}
 	}
 

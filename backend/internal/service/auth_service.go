@@ -680,19 +680,28 @@ func (s *AuthService) canBypassRegistrationDisabledForOAuth(ctx context.Context,
 // affiliateCode 用于邀请返利绑定，仅在新用户注册时使用。
 // signupSource 标识来源渠道（"dingtalk"/"linuxdo"/"wechat"/"oidc" 等），仅用于豁免检查。
 func (s *AuthService) LoginOrRegisterOAuthWithTokenPair(ctx context.Context, email, username, invitationCode, affiliateCode, signupSource string) (*TokenPair, *User, error) {
-	return s.loginOrRegisterOAuthWithTokenPair(ctx, email, username, invitationCode, affiliateCode, "", signupSource)
+	return s.loginOrRegisterOAuthWithTokenPair(ctx, email, username, invitationCode, affiliateCode, "", signupSource, true)
 }
 
 // LoginOrRegisterOAuthWithTokenPairAndPromoCode behaves like
 // LoginOrRegisterOAuthWithTokenPair and applies promoCode only when a new user
 // is created.
 func (s *AuthService) LoginOrRegisterOAuthWithTokenPairAndPromoCode(ctx context.Context, email, username, invitationCode, affiliateCode, promoCode, signupSource string) (*TokenPair, *User, error) {
-	return s.loginOrRegisterOAuthWithTokenPair(ctx, email, username, invitationCode, affiliateCode, promoCode, signupSource)
+	return s.loginOrRegisterOAuthWithTokenPair(ctx, email, username, invitationCode, affiliateCode, promoCode, signupSource, true)
 }
 
-func (s *AuthService) loginOrRegisterOAuthWithTokenPair(ctx context.Context, email, username, invitationCode, affiliateCode, promoCode, signupSource string) (*TokenPair, *User, error) {
-	// 检查 refreshTokenCache 是否可用
-	if s.refreshTokenCache == nil {
+// LoginOrRegisterOAuthUserWithPromoCode creates or loads an OAuth user without
+// issuing credentials. Browser OAuth callbacks use this before a browser-bound
+// pending exchange so no unredeemed refresh token is left behind.
+func (s *AuthService) LoginOrRegisterOAuthUserWithPromoCode(ctx context.Context, email, username, invitationCode, affiliateCode, promoCode, signupSource string) (*User, error) {
+	_, user, err := s.loginOrRegisterOAuthWithTokenPair(ctx, email, username, invitationCode, affiliateCode, promoCode, signupSource, false)
+	return user, err
+}
+
+func (s *AuthService) loginOrRegisterOAuthWithTokenPair(ctx context.Context, email, username, invitationCode, affiliateCode, promoCode, signupSource string, issueTokenPair bool) (*TokenPair, *User, error) {
+	// Token-less browser-bound registration does not need the refresh cache
+	// until the pending session is redeemed.
+	if issueTokenPair && s.refreshTokenCache == nil {
 		return nil, nil, errors.New("refresh token cache not configured")
 	}
 
@@ -848,6 +857,9 @@ func (s *AuthService) loginOrRegisterOAuthWithTokenPair(ctx context.Context, ema
 	}
 	if created {
 		user = s.applyOAuthSignupPromoCode(ctx, user, promoCode)
+	}
+	if !issueTokenPair {
+		return nil, user, nil
 	}
 	tokenPair, err := s.GenerateTokenPair(ctx, user, "")
 	if err != nil {

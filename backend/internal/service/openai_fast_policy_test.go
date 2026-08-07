@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -13,7 +16,49 @@ import (
 )
 
 type openAIFastPolicyRepoStub struct {
-	values map[string]string
+	values        map[string]string
+	getValueCalls atomic.Int64
+}
+
+type orderedOpenAIFastPolicyRepo struct {
+	*openAIFastPolicyRepoStub
+	setCalls       atomic.Int64
+	firstPersisted chan struct{}
+	releaseFirst   chan struct{}
+	secondEntered  chan struct{}
+}
+
+type blockingOpenAIFastPolicyReadRepo struct {
+	*openAIFastPolicyRepoStub
+	enteredOnce sync.Once
+	entered     chan struct{}
+	release     chan struct{}
+	calls       atomic.Int64
+}
+
+func (s *blockingOpenAIFastPolicyReadRepo) GetValue(ctx context.Context, key string) (string, error) {
+	s.calls.Add(1)
+	s.enteredOnce.Do(func() { close(s.entered) })
+	select {
+	case <-s.release:
+		return s.openAIFastPolicyRepoStub.GetValue(context.Background(), key)
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (s *orderedOpenAIFastPolicyRepo) Set(ctx context.Context, key, value string) error {
+	call := s.setCalls.Add(1)
+	if err := s.openAIFastPolicyRepoStub.Set(ctx, key, value); err != nil {
+		return err
+	}
+	if call == 1 {
+		close(s.firstPersisted)
+		<-s.releaseFirst
+	} else if call == 2 {
+		close(s.secondEntered)
+	}
+	return nil
 }
 
 func (s *openAIFastPolicyRepoStub) Get(ctx context.Context, key string) (*Setting, error) {
@@ -21,6 +66,7 @@ func (s *openAIFastPolicyRepoStub) Get(ctx context.Context, key string) (*Settin
 }
 
 func (s *openAIFastPolicyRepoStub) GetValue(ctx context.Context, key string) (string, error) {
+	s.getValueCalls.Add(1)
 	if v, ok := s.values[key]; ok {
 		return v, nil
 	}
@@ -72,6 +118,19 @@ func openAIFastFilterPriorityPolicy() *OpenAIFastPolicySettings {
 			Scope:          BetaPolicyScopeAll,
 			ModelWhitelist: []string{},
 			FallbackAction: BetaPolicyActionPass,
+		}},
+	}
+}
+
+func openAIFastForcePriorityFallbackBlockPolicy() *OpenAIFastPolicySettings {
+	return &OpenAIFastPolicySettings{
+		Rules: []OpenAIFastPolicyRule{{
+			ServiceTier:          OpenAIFastTierAny,
+			Action:               OpenAIFastPolicyActionForcePriority,
+			Scope:                BetaPolicyScopeAll,
+			ModelWhitelist:       []string{"gpt-5.5"},
+			FallbackAction:       BetaPolicyActionBlock,
+			FallbackErrorMessage: "model is not eligible for priority routing",
 		}},
 	}
 }
@@ -384,6 +443,158 @@ func TestApplyOpenAIFastPolicyToBody_BlockReturnsTypedError(t *testing.T) {
 	require.True(t, errors.As(err, &blocked))
 	require.Contains(t, blocked.Message, "fast mode is blocked")
 	require.Equal(t, string(body), string(updated)) // body not mutated on block
+}
+
+func TestApplyOpenAIFastPolicyToBody_ForcePriorityFallbackBlockWithoutTier(t *testing.T) {
+	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastForcePriorityFallbackBlockPolicy())
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	body := []byte(`{"model":"gpt-4","input":"hello"}`)
+
+	updated, err := svc.applyOpenAIFastPolicyToBody(context.Background(), account, "gpt-4", body)
+	require.Error(t, err)
+	var blocked *OpenAIFastBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Equal(t, "model is not eligible for priority routing", blocked.Message)
+	require.Equal(t, string(body), string(updated))
+}
+
+func TestOpenAIFastPolicySettingsCached_CollapsesReadsAndPublishesSet(t *testing.T) {
+	initial := openAIFastForcePriorityFallbackBlockPolicy()
+	raw, err := json.Marshal(initial)
+	require.NoError(t, err)
+	repo := &openAIFastPolicyRepoStub{values: map[string]string{
+		SettingKeyOpenAIFastPolicySettings: string(raw),
+	}}
+	settingSvc := NewSettingService(repo, &config.Config{})
+
+	const readers = 32
+	var wg sync.WaitGroup
+	wg.Add(readers)
+	for range readers {
+		go func() {
+			defer wg.Done()
+			settings, getErr := settingSvc.getOpenAIFastPolicySettingsCached(context.Background())
+			require.NoError(t, getErr)
+			require.Len(t, settings.Rules, 1)
+		}()
+	}
+	wg.Wait()
+	require.EqualValues(t, 1, repo.getValueCalls.Load(), "concurrent hot-path reads should share one DB load")
+
+	updated := &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{
+		ServiceTier: OpenAIFastTierAny,
+		Action:      OpenAIFastPolicyActionForcePriority,
+		Scope:       BetaPolicyScopeAll,
+	}}}
+	require.NoError(t, settingSvc.SetOpenAIFastPolicySettings(context.Background(), updated))
+	// The cache owns a deep copy, so a caller cannot mutate the published snapshot.
+	updated.Rules[0].Action = BetaPolicyActionPass
+
+	cached, err := settingSvc.getOpenAIFastPolicySettingsCached(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, OpenAIFastPolicyActionForcePriority, cached.Rules[0].Action)
+	require.EqualValues(t, 1, repo.getValueCalls.Load(), "successful writes should update the local cache without another DB read")
+}
+
+func TestSetOpenAIFastPolicySettings_SerializesPersistenceAndCachePublication(t *testing.T) {
+	repo := &orderedOpenAIFastPolicyRepo{
+		openAIFastPolicyRepoStub: &openAIFastPolicyRepoStub{values: map[string]string{}},
+		firstPersisted:           make(chan struct{}),
+		releaseFirst:             make(chan struct{}),
+		secondEntered:            make(chan struct{}),
+	}
+	settingSvc := NewSettingService(repo, &config.Config{})
+	first := &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{
+		ServiceTier: OpenAIFastTierAny,
+		Action:      OpenAIFastPolicyActionForcePriority,
+		Scope:       BetaPolicyScopeAll,
+	}}}
+	second := &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{
+		ServiceTier: OpenAIFastTierAny,
+		Action:      BetaPolicyActionBlock,
+		Scope:       BetaPolicyScopeAll,
+	}}}
+
+	firstErr := make(chan error, 1)
+	go func() { firstErr <- settingSvc.SetOpenAIFastPolicySettings(context.Background(), first) }()
+	<-repo.firstPersisted
+	secondErr := make(chan error, 1)
+	go func() { secondErr <- settingSvc.SetOpenAIFastPolicySettings(context.Background(), second) }()
+	select {
+	case <-repo.secondEntered:
+		t.Fatal("second policy write entered the repository before the first cache publication")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(repo.releaseFirst)
+	require.NoError(t, <-firstErr)
+	require.NoError(t, <-secondErr)
+
+	var persisted OpenAIFastPolicySettings
+	require.NoError(t, json.Unmarshal([]byte(repo.values[SettingKeyOpenAIFastPolicySettings]), &persisted))
+	require.Equal(t, BetaPolicyActionBlock, persisted.Rules[0].Action)
+	cached, err := settingSvc.getOpenAIFastPolicySettingsCached(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, BetaPolicyActionBlock, cached.Rules[0].Action)
+}
+
+func TestOpenAIFastPolicySettingsCached_ColdWaitHonorsCallerCancellation(t *testing.T) {
+	repo := &blockingOpenAIFastPolicyReadRepo{
+		openAIFastPolicyRepoStub: &openAIFastPolicyRepoStub{values: map[string]string{}},
+		entered:                  make(chan struct{}),
+		release:                  make(chan struct{}),
+	}
+	settingSvc := NewSettingService(repo, &config.Config{})
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := settingSvc.getOpenAIFastPolicySettingsCached(ctx)
+		result <- err
+	}()
+	<-repo.entered
+	cancel()
+
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("cold cache caller remained blocked after its context was canceled")
+	}
+	close(repo.release)
+}
+
+func TestOpenAIFastPolicySettingsCached_StaleRequestsStartOneBackgroundRefresh(t *testing.T) {
+	updated := openAIFastForcePriorityFallbackBlockPolicy()
+	raw, err := json.Marshal(updated)
+	require.NoError(t, err)
+	repo := &blockingOpenAIFastPolicyReadRepo{
+		openAIFastPolicyRepoStub: &openAIFastPolicyRepoStub{values: map[string]string{
+			SettingKeyOpenAIFastPolicySettings: string(raw),
+		}},
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	settingSvc := NewSettingService(repo, &config.Config{})
+	settingSvc.openAIFastPolicyCache.Store(&cachedOpenAIFastPolicySettings{
+		settings: OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{{
+			ServiceTier: OpenAIFastTierAny,
+			Action:      BetaPolicyActionPass,
+			Scope:       BetaPolicyScopeAll,
+		}}},
+		expiresAt: time.Now().Add(-time.Second).UnixNano(),
+	})
+
+	for range 256 {
+		settings, getErr := settingSvc.getOpenAIFastPolicySettingsCached(context.Background())
+		require.NoError(t, getErr)
+		require.Equal(t, BetaPolicyActionPass, settings.Rules[0].Action)
+	}
+	<-repo.entered
+	require.EqualValues(t, 1, repo.calls.Load(), "stale traffic must not enqueue one refresh waiter per request")
+	close(repo.release)
+	require.Eventually(t, func() bool {
+		cached := settingSvc.openAIFastPolicyCache.Load()
+		return cached != nil && len(cached.settings.Rules) == 1 && cached.settings.Rules[0].FallbackAction == BetaPolicyActionBlock
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestSetOpenAIFastPolicySettings_Validation(t *testing.T) {

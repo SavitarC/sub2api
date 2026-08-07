@@ -42,7 +42,7 @@ describe('FeishuOAuthSection', () => {
     await wrapper.get('[data-testid="feishu-oauth-login"]').trigger('click')
 
     expect(locationState.current.href).toBe(
-      '/api/v1/auth/oauth/feishu/start?redirect=%2Fbilling%3Fplan%3Dmock'
+      '/api/v1/auth/oauth/feishu/start?redirect=%2Fbilling%3Fplan%3Dmock&aff_code=mock-feishu-affiliate'
     )
     expect(sessionStorage.getItem('oauth_aff_code')).toBe('mock-feishu-affiliate')
   })

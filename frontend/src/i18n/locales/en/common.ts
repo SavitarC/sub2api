@@ -335,6 +335,7 @@ export default {
       callbackHint: 'If you are not redirected automatically, go back to the login page and try again.',
       callbackMissingToken: 'Missing login token, please try again.',
       backToLogin: 'Back to Login',
+      retry: 'Retry',
       completeRegistrationFailed: 'Registration failed. Please check the account details and try again.',
       error: {
         title: 'Feishu Sign-in Failed',

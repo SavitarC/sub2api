@@ -11,6 +11,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // IsRegistrationEnabled 检查是否开放注册
@@ -958,6 +959,134 @@ func (s *SettingService) GetOpenAIFastPolicySettings(ctx context.Context) (*Open
 	return &settings, nil
 }
 
+const (
+	// Poll once per second per instance. This removes per-request SQL while
+	// keeping cross-instance policy changes tightly bounded without requiring
+	// the settings repository to provide a distributed invalidation channel.
+	openAIFastPolicyCacheTTL  = time.Second
+	openAIFastPolicyErrorTTL  = 5 * time.Second
+	openAIFastPolicyDBTimeout = 2 * time.Second
+	openAIFastPolicyCacheKey  = "openai_fast_policy_settings"
+)
+
+type cachedOpenAIFastPolicySettings struct {
+	settings  OpenAIFastPolicySettings
+	expiresAt int64 // unix nano
+}
+
+// getOpenAIFastPolicySettingsCached returns an immutable process-local policy
+// snapshot for gateway hot paths. The direct getter above remains available to
+// management paths that explicitly need a fresh DB read.
+func (s *SettingService) getOpenAIFastPolicySettingsCached(ctx context.Context) (*OpenAIFastPolicySettings, error) {
+	if s == nil || s.settingRepo == nil {
+		return DefaultOpenAIFastPolicySettings(), nil
+	}
+	now := time.Now().UnixNano()
+	cached := s.openAIFastPolicyCache.Load()
+	if cached != nil && now < cached.expiresAt {
+		return &cached.settings, nil
+	}
+
+	if cached != nil {
+		s.triggerOpenAIFastPolicyRefresh()
+		// Reload after triggering so a concurrent setter or immediately completed
+		// refresh wins over the previously observed stale value.
+		if current := s.openAIFastPolicyCache.Load(); current != nil {
+			return &current.settings, nil
+		}
+	}
+
+	// Cold callers share one load but can stop waiting when their own request is
+	// canceled. Once any snapshot exists, the stale path above uses a single
+	// atomic-gated background refresh and allocates no per-request wait channel.
+	resultCh := s.openAIFastPolicySF.DoChan(openAIFastPolicyCacheKey, func() (any, error) {
+		return s.refreshOpenAIFastPolicySettings(), nil
+	})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case result := <-resultCh:
+		if result.Err != nil {
+			return DefaultOpenAIFastPolicySettings(), result.Err
+		}
+		settings, ok := result.Val.(*OpenAIFastPolicySettings)
+		if !ok || settings == nil {
+			return DefaultOpenAIFastPolicySettings(), nil
+		}
+		return settings, nil
+	case <-ctx.Done():
+		return DefaultOpenAIFastPolicySettings(), ctx.Err()
+	}
+}
+
+func (s *SettingService) triggerOpenAIFastPolicyRefresh() {
+	if s == nil || !s.openAIFastPolicyRefresh.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer s.openAIFastPolicyRefresh.Store(false)
+		s.refreshOpenAIFastPolicySettings()
+	}()
+}
+
+func (s *SettingService) refreshOpenAIFastPolicySettings() *OpenAIFastPolicySettings {
+	observed := s.openAIFastPolicyCache.Load()
+	if observed != nil && time.Now().UnixNano() < observed.expiresAt {
+		return &observed.settings
+	}
+
+	dbCtx, cancel := context.WithTimeout(context.Background(), openAIFastPolicyDBTimeout)
+	defer cancel()
+	settings, err := s.GetOpenAIFastPolicySettings(dbCtx)
+	ttl := openAIFastPolicyCacheTTL
+	if err != nil {
+		slog.Warn("failed to get openai fast policy settings", "error", err)
+		ttl = openAIFastPolicyErrorTTL
+		if observed != nil {
+			settings = &observed.settings
+		} else {
+			settings = DefaultOpenAIFastPolicySettings()
+		}
+	}
+
+	entry := &cachedOpenAIFastPolicySettings{
+		settings:  cloneOpenAIFastPolicySettings(settings),
+		expiresAt: time.Now().Add(ttl).UnixNano(),
+	}
+	// A concurrent successful setter publishes a different pointer. Do not let
+	// this older DB read overwrite that newer policy snapshot.
+	if !s.openAIFastPolicyCache.CompareAndSwap(observed, entry) {
+		if current := s.openAIFastPolicyCache.Load(); current != nil {
+			return &current.settings
+		}
+	}
+	return &entry.settings
+}
+
+func (s *SettingService) storeOpenAIFastPolicyCache(settings *OpenAIFastPolicySettings, ttl time.Duration) {
+	if s == nil {
+		return
+	}
+	s.openAIFastPolicyCache.Store(&cachedOpenAIFastPolicySettings{
+		settings:  cloneOpenAIFastPolicySettings(settings),
+		expiresAt: time.Now().Add(ttl).UnixNano(),
+	})
+}
+
+func cloneOpenAIFastPolicySettings(settings *OpenAIFastPolicySettings) OpenAIFastPolicySettings {
+	if settings == nil {
+		return *DefaultOpenAIFastPolicySettings()
+	}
+	cloned := OpenAIFastPolicySettings{Rules: make([]OpenAIFastPolicyRule, len(settings.Rules))}
+	for i := range settings.Rules {
+		cloned.Rules[i] = settings.Rules[i]
+		cloned.Rules[i].UserIDs = append([]int64(nil), settings.Rules[i].UserIDs...)
+		cloned.Rules[i].ModelWhitelist = append([]string(nil), settings.Rules[i].ModelWhitelist...)
+	}
+	return cloned
+}
+
 func canonicalizeOpenAIFastPolicySettings(settings *OpenAIFastPolicySettings) {
 	if settings == nil {
 		return
@@ -1031,7 +1160,18 @@ func (s *SettingService) SetOpenAIFastPolicySettings(ctx context.Context, settin
 		return fmt.Errorf("marshal openai fast policy settings: %w", err)
 	}
 
-	return s.settingRepo.Set(ctx, SettingKeyOpenAIFastPolicySettings, string(data))
+	s.openAIFastPolicyWriteMu.Lock()
+	defer s.openAIFastPolicyWriteMu.Unlock()
+	if err := s.settingRepo.Set(ctx, SettingKeyOpenAIFastPolicySettings, string(data)); err != nil {
+		return err
+	}
+
+	// Publish an immutable write-through snapshot. Forgetting the key keeps a
+	// previous in-flight load from being joined; its CAS store cannot overwrite
+	// this newer pointer.
+	s.storeOpenAIFastPolicyCache(settings, openAIFastPolicyCacheTTL)
+	s.openAIFastPolicySF.Forget(openAIFastPolicyCacheKey)
+	return nil
 }
 
 // SetStreamTimeoutSettings 设置流超时处理配置

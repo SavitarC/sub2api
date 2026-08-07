@@ -708,6 +708,77 @@ func TestExchangePendingOAuthCompletionLoginWithoutDecisionStillBindsIdentity(t 
 	require.NotNil(t, storedSession.ConsumedAt)
 }
 
+func TestExchangePendingOAuthCompletionTokenFailureKeepsSessionRetryable(t *testing.T) {
+	refreshCache := &oauthPendingFlowRefreshTokenCacheStub{storeFailures: 1}
+	handler, client := newOAuthPendingFlowTestHandlerWithDependencies(t, oauthPendingFlowTestHandlerOptions{
+		refreshTokenCache: refreshCache,
+	})
+	ctx := context.Background()
+
+	userEntity, err := client.User.Create().
+		SetEmail("retry-token@example.com").
+		SetUsername("retry-token-user").
+		SetPasswordHash("hash").
+		SetRole(service.RoleUser).
+		SetStatus(service.StatusActive).
+		Save(ctx)
+	require.NoError(t, err)
+	_, err = client.AuthIdentity.Create().
+		SetUserID(userEntity.ID).
+		SetProviderType("feishu").
+		SetProviderKey("feishu:client").
+		SetProviderSubject("retry-token-subject").
+		SetMetadata(map[string]any{}).
+		Save(ctx)
+	require.NoError(t, err)
+	session, err := client.PendingAuthSession.Create().
+		SetSessionToken("retry-token-session").
+		SetIntent(oauthIntentLogin).
+		SetProviderType("feishu").
+		SetProviderKey("feishu:client").
+		SetProviderSubject("retry-token-subject").
+		SetTargetUserID(userEntity.ID).
+		SetResolvedEmail(userEntity.Email).
+		SetBrowserSessionKey("retry-token-browser").
+		SetUpstreamIdentityClaims(map[string]any{}).
+		SetLocalFlowState(map[string]any{
+			oauthCompletionResponseKey: map[string]any{"redirect": "/dashboard"},
+		}).
+		SetExpiresAt(time.Now().UTC().Add(10 * time.Minute)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	exchange := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		ginCtx, _ := gin.CreateTestContext(recorder)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/pending/exchange", nil)
+		req.AddCookie(&http.Cookie{Name: oauthPendingSessionCookieName, Value: encodeCookieValue(session.SessionToken)})
+		req.AddCookie(&http.Cookie{Name: oauthPendingBrowserCookieName, Value: encodeCookieValue(session.BrowserSessionKey)})
+		ginCtx.Request = req
+		handler.ExchangePendingOAuthCompletion(ginCtx)
+		return recorder
+	}
+
+	first := exchange()
+	require.Equal(t, http.StatusInternalServerError, first.Code)
+	require.NotContains(t, first.Body.String(), "access_token")
+	require.Nil(t, findCookie(first.Result().Cookies(), oauthPendingSessionCookieName))
+	require.Nil(t, findCookie(first.Result().Cookies(), oauthPendingBrowserCookieName))
+	storedSession, err := client.PendingAuthSession.Get(ctx, session.ID)
+	require.NoError(t, err)
+	require.Nil(t, storedSession.ConsumedAt)
+
+	second := exchange()
+	require.Equal(t, http.StatusOK, second.Code)
+	payload := decodeJSONResponseData(t, second)
+	require.NotEmpty(t, payload["access_token"])
+	require.NotEmpty(t, payload["refresh_token"])
+	storedSession, err = client.PendingAuthSession.Get(ctx, session.ID)
+	require.NoError(t, err)
+	require.NotNil(t, storedSession.ConsumedAt)
+	require.Equal(t, 2, refreshCache.storeCalls)
+}
+
 func TestExchangePendingOAuthCompletionExistingLoginWithSuggestedProfileSkipsAdoptionPrompt(t *testing.T) {
 	handler, client := newOAuthPendingFlowTestHandler(t, false)
 	ctx := context.Background()
@@ -1297,6 +1368,7 @@ func TestCreateOIDCOAuthAccountExistingEmailReturnsChoicePendingSessionState(t *
 	require.Equal(t, true, payload["adoption_required"])
 	require.Equal(t, oauthPendingChoiceStep, payload["step"])
 	require.Equal(t, "owner@example.com", payload["email"])
+	require.Equal(t, false, payload["create_account_allowed"])
 	require.Equal(t, "Existing OIDC User", payload["suggested_display_name"])
 	require.Equal(t, "https://cdn.example/existing.png", payload["suggested_avatar_url"])
 
@@ -1317,6 +1389,43 @@ func TestCreateOIDCOAuthAccountExistingEmailReturnsChoicePendingSessionState(t *
 		Count(ctx)
 	require.NoError(t, err)
 	require.Zero(t, identityCount)
+
+	exchangeBody := bytes.NewBufferString(`{"adopt_display_name":true,"adopt_avatar":true}`)
+	exchangeRecorder := httptest.NewRecorder()
+	exchangeCtx, _ := gin.CreateTestContext(exchangeRecorder)
+	exchangeReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/pending/exchange", exchangeBody)
+	exchangeReq.Header.Set("Content-Type", "application/json")
+	exchangeReq.AddCookie(&http.Cookie{Name: oauthPendingSessionCookieName, Value: encodeCookieValue(session.SessionToken)})
+	exchangeReq.AddCookie(&http.Cookie{Name: oauthPendingBrowserCookieName, Value: encodeCookieValue("existing-email-browser-session-key")})
+	exchangeCtx.Request = exchangeReq
+
+	handler.ExchangePendingOAuthCompletion(exchangeCtx)
+
+	require.Equal(t, http.StatusOK, exchangeRecorder.Code)
+	exchangePayload := decodeJSONResponseData(t, exchangeRecorder)
+	require.Equal(t, oauthPendingChoiceStep, exchangePayload["step"])
+	require.Equal(t, false, exchangePayload["create_account_allowed"])
+	require.NotContains(t, exchangePayload, "access_token")
+	identityCount, err = client.AuthIdentity.Query().
+		Where(
+			authidentity.ProviderTypeEQ("oidc"),
+			authidentity.ProviderKeyEQ("https://issuer.example"),
+			authidentity.ProviderSubjectEQ("oidc-existing-123"),
+		).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Zero(t, identityCount)
+	decisionCount, err := client.IdentityAdoptionDecision.Query().
+		Where(identityadoptiondecision.PendingAuthSessionIDEQ(session.ID)).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Zero(t, decisionCount)
+	unchangedUser, err := client.User.Get(ctx, existingUser.ID)
+	require.NoError(t, err)
+	require.Equal(t, "owner-user", unchangedUser.Username)
+	storedSession, err = client.PendingAuthSession.Get(ctx, session.ID)
+	require.NoError(t, err)
+	require.Nil(t, storedSession.ConsumedAt)
 }
 
 func TestCreateOIDCOAuthAccountExistingEmailNormalizesLegacySpacingAndCase(t *testing.T) {
@@ -2372,6 +2481,7 @@ type oauthPendingFlowTestHandlerOptions struct {
 	defaultSubAssigner service.DefaultSubscriptionAssigner
 	affiliateService   *service.AffiliateService
 	affiliateFactory   func(*dbent.Client, *service.SettingService) *service.AffiliateService
+	refreshTokenCache  service.RefreshTokenCache
 	totpCache          service.TotpCache
 	totpEncryptor      service.SecretEncryptor
 	userRepoOptions    oauthPendingFlowUserRepoOptions
@@ -2473,11 +2583,15 @@ CREATE TABLE IF NOT EXISTS user_affiliates (
 			},
 		}, options.emailCache)
 	}
+	refreshTokenCache := options.refreshTokenCache
+	if refreshTokenCache == nil {
+		refreshTokenCache = &oauthPendingFlowRefreshTokenCacheStub{}
+	}
 	authSvc := service.NewAuthService(
 		client,
 		userRepo,
 		redeemRepo,
-		&oauthPendingFlowRefreshTokenCacheStub{},
+		refreshTokenCache,
 		cfg,
 		settingSvc,
 		emailService,
@@ -2646,7 +2760,11 @@ func (s *oauthPendingFlowSettingRepoStub) Delete(context.Context, string) error 
 	return nil
 }
 
-type oauthPendingFlowRefreshTokenCacheStub struct{}
+type oauthPendingFlowRefreshTokenCacheStub struct {
+	storeFailures int
+	storeCalls    int
+	deleteCalls   int
+}
 
 type oauthPendingFlowEmailCacheStub struct {
 	verificationCodes map[string]*service.VerificationCodeData
@@ -2713,6 +2831,11 @@ func (s *oauthPendingFlowEmailCacheStub) GetNotifyCodeUserRate(context.Context, 
 }
 
 func (s *oauthPendingFlowRefreshTokenCacheStub) StoreRefreshToken(context.Context, string, *service.RefreshTokenData, time.Duration) error {
+	s.storeCalls++
+	if s.storeFailures > 0 {
+		s.storeFailures--
+		return errors.New("mock refresh token store failure")
+	}
 	return nil
 }
 
@@ -2721,6 +2844,7 @@ func (s *oauthPendingFlowRefreshTokenCacheStub) GetRefreshToken(context.Context,
 }
 
 func (s *oauthPendingFlowRefreshTokenCacheStub) DeleteRefreshToken(context.Context, string) error {
+	s.deleteCalls++
 	return nil
 }
 

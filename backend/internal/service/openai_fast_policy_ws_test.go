@@ -140,6 +140,44 @@ func TestWSResponseCreate_ForcePriorityInjectsMissingTier(t *testing.T) {
 	require.Equal(t, OpenAIFastTierPriority, gjson.GetBytes(updated, "service_tier").String())
 }
 
+func TestWSResponseCreate_ForcePriorityFallbackBlockWithoutTier(t *testing.T) {
+	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastForcePriorityFallbackBlockPolicy())
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	frame := []byte(`{"type":"response.create","model":"gpt-4","input":[]}`)
+
+	updated, blocked, err := svc.applyOpenAIFastPolicyToWSResponseCreate(context.Background(), account, "gpt-4", frame)
+	require.NoError(t, err)
+	require.NotNil(t, blocked)
+	require.Equal(t, "model is not eligible for priority routing", blocked.Message)
+	require.Equal(t, string(frame), string(updated))
+}
+
+func TestForwardNativeResponses_ForcePriorityFallbackBlockWithoutTier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastForcePriorityFallbackBlockPolicy())
+	svc.cfg = &config.Config{}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{"model":"gpt-4","input":"hello"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body)))
+	account := &Account{
+		ID:          1001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{"access_token": "test-token"},
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.Nil(t, result)
+	var blocked *OpenAIFastBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "model is not eligible for priority routing")
+}
+
 func TestWSResponseCreate_FlexPassThrough(t *testing.T) {
 	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
