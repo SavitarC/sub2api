@@ -92,7 +92,7 @@ func feishuSettingTestConfig() *config.Config {
 		ClientID:            "cli_config",
 		ClientSecret:        "secret_config",
 		AuthorizeURL:        "https://accounts.feishu.cn/open-apis/authen/v1/authorize",
-		TokenURL:            "https://accounts.feishu.cn/oauth/v3/token",
+		TokenURL:            "https://open.feishu.cn/open-apis/authen/v2/oauth/token",
 		UserInfoURL:         "https://open.feishu.cn/open-apis/authen/v1/user_info",
 		RedirectURL:         "https://api.example.com/api/v1/auth/oauth/feishu/callback",
 		FrontendRedirectURL: "/auth/feishu/callback",

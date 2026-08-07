@@ -2000,7 +2000,7 @@ func setDefaults() {
 	viper.SetDefault("feishu_connect.client_id", "")
 	viper.SetDefault("feishu_connect.client_secret", "")
 	viper.SetDefault("feishu_connect.authorize_url", "https://accounts.feishu.cn/open-apis/authen/v1/authorize")
-	viper.SetDefault("feishu_connect.token_url", "https://accounts.feishu.cn/oauth/v3/token")
+	viper.SetDefault("feishu_connect.token_url", "https://open.feishu.cn/open-apis/authen/v2/oauth/token")
 	viper.SetDefault("feishu_connect.userinfo_url", "https://open.feishu.cn/open-apis/authen/v1/user_info")
 	viper.SetDefault("feishu_connect.scopes", "")
 	viper.SetDefault("feishu_connect.redirect_url", "")

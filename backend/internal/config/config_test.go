@@ -707,6 +707,16 @@ func TestLoadDefaultOIDCSecurityDefaults(t *testing.T) {
 	require.False(t, cfg.OIDC.ValidateIDTokenExplicit)
 }
 
+func TestLoadDefaultFeishuOAuthEndpoints(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "https://accounts.feishu.cn/open-apis/authen/v1/authorize", cfg.Feishu.AuthorizeURL)
+	require.Equal(t, "https://open.feishu.cn/open-apis/authen/v2/oauth/token", cfg.Feishu.TokenURL)
+	require.Equal(t, "https://open.feishu.cn/open-apis/authen/v1/user_info", cfg.Feishu.UserInfoURL)
+}
+
 func TestLoadExplicitOIDCSecurityDefaultsFromEnvMarksFlagsExplicit(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("OIDC_CONNECT_USE_PKCE", "false")

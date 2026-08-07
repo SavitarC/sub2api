@@ -1059,7 +1059,7 @@ feishu_connect:
   client_id: ""
   client_secret: ""
   authorize_url: "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
-  token_url: "https://accounts.feishu.cn/oauth/v3/token"
+  token_url: "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
   userinfo_url: "https://open.feishu.cn/open-apis/authen/v1/user_info"
   # 可选；需要读取邮箱时可在飞书开放平台授权相应权限后填写 scope
   scopes: ""

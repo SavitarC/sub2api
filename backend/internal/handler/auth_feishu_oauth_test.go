@@ -442,7 +442,7 @@ func TestFeishuOAuthClient_MockedAccount(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/oauth/v3/token":
+		case "/open-apis/authen/v2/oauth/token":
 			require.Equal(t, http.MethodPost, r.Method)
 			require.Equal(t, "application/json; charset=utf-8", r.Header.Get("Content-Type"))
 			require.Empty(t, r.Header.Get("Authorization"))
@@ -662,7 +662,7 @@ func newMockFeishuOAuthServer(t *testing.T, openID, email string) *httptest.Serv
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/oauth/v3/token":
+		case "/open-apis/authen/v2/oauth/token":
 			_, _ = w.Write([]byte(`{"code":0,"access_token":"u-token-mock","expires_in":7200,"refresh_token":"r-token-mock","token_type":"Bearer"}`))
 		case "/open-apis/authen/v1/user_info":
 			responseBody, err := json.Marshal(feishuUserInfoResponse{
@@ -721,7 +721,7 @@ func mockFeishuConfig(baseURL string) config.FeishuConnectConfig {
 		ClientID:            "cli_mock",
 		ClientSecret:        "secret_mock",
 		AuthorizeURL:        strings.TrimRight(baseURL, "/") + "/open-apis/authen/v1/authorize",
-		TokenURL:            strings.TrimRight(baseURL, "/") + "/oauth/v3/token",
+		TokenURL:            strings.TrimRight(baseURL, "/") + "/open-apis/authen/v2/oauth/token",
 		UserInfoURL:         strings.TrimRight(baseURL, "/") + "/open-apis/authen/v1/user_info",
 		Scopes:              "",
 		RedirectURL:         "https://api.example.com/api/v1/auth/oauth/feishu/callback",
