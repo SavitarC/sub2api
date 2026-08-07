@@ -237,6 +237,7 @@ export interface PendingOAuthBindLoginResponse extends Partial<OAuthTokenRespons
   adoption_required?: boolean
   suggested_display_name?: string
   suggested_avatar_url?: string
+  suggested_email?: string
 }
 
 export type PendingOAuthExchangeResponse = PendingOAuthBindLoginResponse

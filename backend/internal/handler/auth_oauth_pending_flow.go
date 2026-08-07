@@ -316,7 +316,7 @@ func mergePendingCompletionResponse(session *dbent.PendingAuthSession, overrides
 		}
 		merged[key] = value
 	}
-	applySuggestedProfileToCompletionResponse(merged, session.UpstreamIdentityClaims)
+	applySuggestedProfileToCompletionResponse(merged, session)
 	return merged
 }
 
@@ -1377,10 +1377,11 @@ func applyPendingOAuthAdoption(
 	)
 }
 
-func applySuggestedProfileToCompletionResponse(payload map[string]any, upstream map[string]any) {
-	if len(payload) == 0 || len(upstream) == 0 {
+func applySuggestedProfileToCompletionResponse(payload map[string]any, session *dbent.PendingAuthSession) {
+	if len(payload) == 0 || session == nil {
 		return
 	}
+	upstream := session.UpstreamIdentityClaims
 
 	displayName := pendingSessionStringValue(upstream, "suggested_display_name")
 	avatarURL := pendingSessionStringValue(upstream, "suggested_avatar_url")
@@ -1398,6 +1399,28 @@ func applySuggestedProfileToCompletionResponse(payload map[string]any, upstream 
 	if displayName != "" || avatarURL != "" {
 		payload["adoption_required"] = true
 	}
+
+	if !strings.EqualFold(strings.TrimSpace(session.ProviderType), "feishu") {
+		return
+	}
+	email := pendingFeishuSuggestedEmail(session)
+	delete(payload, "suggested_email")
+	delete(payload, "compat_email")
+	if email != "" {
+		payload["suggested_email"] = email
+		payload["adoption_required"] = true
+	}
+}
+
+func pendingFeishuSuggestedEmail(session *dbent.PendingAuthSession) string {
+	if session == nil || !strings.EqualFold(strings.TrimSpace(session.ProviderType), "feishu") {
+		return ""
+	}
+	email := pendingSessionStringValue(session.UpstreamIdentityClaims, "suggested_email")
+	if email == "" {
+		email = pendingSessionStringValue(session.UpstreamIdentityClaims, "compat_email")
+	}
+	return service.NormalizeOAuthSuggestedEmail(email)
 }
 
 func pendingOAuthIdentityExistsForUser(
@@ -1450,8 +1473,10 @@ func (h *AuthHandler) shouldSkipPendingOAuthAdoptionPrompt(
 	if !pendingOAuthCompletionCanIssueTokenPair(session, payload) {
 		return false, nil
 	}
-	if pendingSessionStringValue(session.UpstreamIdentityClaims, "suggested_display_name") == "" &&
-		pendingSessionStringValue(session.UpstreamIdentityClaims, "suggested_avatar_url") == "" {
+	hasSuggestion := pendingFeishuSuggestedEmail(session) != "" ||
+		pendingSessionStringValue(session.UpstreamIdentityClaims, "suggested_display_name") != "" ||
+		pendingSessionStringValue(session.UpstreamIdentityClaims, "suggested_avatar_url") != ""
+	if !hasSuggestion {
 		return false, nil
 	}
 
@@ -1968,7 +1993,7 @@ func (h *AuthHandler) ExchangePendingOAuthCompletion(c *gin.Context) {
 			payload["redirect"] = session.RedirectTo
 		}
 	}
-	applySuggestedProfileToCompletionResponse(payload, session.UpstreamIdentityClaims)
+	applySuggestedProfileToCompletionResponse(payload, session)
 
 	canIssueTokenPair := pendingOAuthCompletionCanIssueTokenPair(session, payload)
 	var loginUser *service.User

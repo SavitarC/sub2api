@@ -827,6 +827,8 @@ export default {
       sendCodeAction: '发送验证码',
       manageEmailAction: '管理邮箱',
       hideEmailFormAction: '收起邮箱表单',
+      useFeishuSuggestedEmail: '使用飞书邮箱',
+      feishuEmailVerificationHint: '这里只会预填邮箱表单，完成邮箱验证码验证后才会绑定。',
       confirmEmailBindAction: '绑定邮箱',
       confirmEmailReplaceAction: '更换主邮箱',
       codeSentTo: '验证码已发送到 {email}',

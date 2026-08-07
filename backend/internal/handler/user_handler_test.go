@@ -282,6 +282,59 @@ func TestUserHandlerGetProfileReturnsIdentitySummaries(t *testing.T) {
 	require.Contains(t, resp.Data.Identities.WeChat.BindStartPath, "/api/v1/auth/oauth/wechat/bind/start")
 }
 
+func TestUserHandlerGetProfileReturnsFeishuSuggestedEmailWithoutRawMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	repo := &userHandlerRepoStub{
+		user: &service.User{
+			ID:       12,
+			Email:    "feishu-profile" + service.FeishuConnectSyntheticEmailDomain,
+			Username: "feishu-profile-user",
+			Role:     service.RoleUser,
+			Status:   service.StatusActive,
+		},
+		identities: []service.UserAuthIdentityRecord{
+			{
+				ProviderType:    "feishu",
+				ProviderKey:     "feishu:cli_profile",
+				ProviderSubject: "ou_profile_12",
+				Metadata: map[string]any{
+					"compat_email": " Suggested@Example.com ",
+					"open_id":      "ou-metadata-secret",
+					"tenant_key":   "tenant-secret",
+				},
+			},
+		},
+	}
+	handler := NewUserHandler(service.NewUserService(repo, nil, nil, nil), nil, nil, nil, nil, nil)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/user/profile", nil)
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 12})
+
+	handler.GetProfile(c)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var resp struct {
+		Code int            `json:"code"`
+		Data map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	require.Equal(t, false, resp.Data["email_bound"])
+	identities := resp.Data["identities"].(map[string]any)
+	feishuIdentity := identities["feishu"].(map[string]any)
+	require.Equal(t, "suggested@example.com", feishuIdentity["suggested_email"])
+	authBindings := resp.Data["auth_bindings"].(map[string]any)
+	feishuBinding := authBindings["feishu"].(map[string]any)
+	require.Equal(t, "suggested@example.com", feishuBinding["suggested_email"])
+	require.NotContains(t, recorder.Body.String(), "ou-metadata-secret")
+	require.NotContains(t, recorder.Body.String(), "tenant-secret")
+	require.NotContains(t, recorder.Body.String(), "\"open_id\"")
+	require.NotContains(t, recorder.Body.String(), "\"tenant_key\"")
+	require.NotContains(t, feishuIdentity, "metadata")
+}
+
 func TestUserHandlerGetProfileReturnsLegacyCompatibilityFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

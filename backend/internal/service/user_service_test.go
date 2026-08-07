@@ -431,6 +431,52 @@ func TestGetProfileIdentitySummaries_AllowsUnbindWhenAnotherLoginMethodRemains(t
 	require.NotEmpty(t, summaries.LinuxDo.SubjectHint)
 }
 
+func TestGetProfileIdentitySummaries_ExposesOnlySafeFeishuSuggestedEmail(t *testing.T) {
+	repo := &mockUserRepo{
+		getByIDUser: &User{ID: 8, Email: "feishu-user" + FeishuConnectSyntheticEmailDomain},
+		identities: []UserAuthIdentityRecord{
+			{
+				ProviderType:    "feishu",
+				ProviderKey:     "feishu:cli_test",
+				ProviderSubject: "ou_feishu_8",
+				Metadata: map[string]any{
+					"compat_email": "  User@Example.com  ",
+				},
+			},
+			{
+				ProviderType:    "oidc",
+				ProviderKey:     "https://issuer.example.com",
+				ProviderSubject: "oidc-subject-8",
+				Metadata: map[string]any{
+					"compat_email": "other@example.com",
+				},
+			},
+		},
+	}
+	svc := NewUserService(repo, nil, nil, nil)
+
+	summaries, err := svc.GetProfileIdentitySummaries(context.Background(), 8, repo.getByIDUser)
+
+	require.NoError(t, err)
+	require.Equal(t, "user@example.com", summaries.Feishu.SuggestedEmail)
+	require.Empty(t, summaries.OIDC.SuggestedEmail)
+
+	repo.getByIDUser.Email = "user@example.com"
+	summaries, err = svc.GetProfileIdentitySummaries(context.Background(), 8, repo.getByIDUser)
+	require.NoError(t, err)
+	require.Empty(t, summaries.Feishu.SuggestedEmail)
+
+	repo.getByIDUser.Email = "different@example.com"
+	summaries, err = svc.GetProfileIdentitySummaries(context.Background(), 8, repo.getByIDUser)
+	require.NoError(t, err)
+	require.Equal(t, "user@example.com", summaries.Feishu.SuggestedEmail)
+
+	repo.identities[0].Metadata["compat_email"] = "user@feishu-connect.invalid"
+	summaries, err = svc.GetProfileIdentitySummaries(context.Background(), 8, repo.getByIDUser)
+	require.NoError(t, err)
+	require.Empty(t, summaries.Feishu.SuggestedEmail)
+}
+
 func TestUnbindUserAuthProviderRejectsLastRemainingLoginMethod(t *testing.T) {
 	repo := &mockUserRepo{
 		getByIDUser: &User{

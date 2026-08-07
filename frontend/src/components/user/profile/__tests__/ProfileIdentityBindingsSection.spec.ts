@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProfileIdentityBindingsSection from '@/components/user/profile/ProfileIdentityBindingsSection.vue'
 import { useAppStore, useAuthStore } from '@/stores'
 import type { User } from '@/types'
+import { PROFILE_EMAIL_BINDING_PREFILL_KEY } from '@/utils/profileEmailBinding'
 
 const routeState = vi.hoisted(() => ({
   fullPath: '/profile',
@@ -60,6 +61,9 @@ vi.mock('vue-i18n', async (importOriginal) => {
         if (key === 'profile.authBindings.unbindAction') return 'Unbind'
         if (key === 'profile.authBindings.manageEmailAction') return 'Manage email'
         if (key === 'profile.authBindings.hideEmailFormAction') return 'Hide email form'
+        if (key === 'profile.authBindings.useFeishuSuggestedEmail') return 'Use Feishu email'
+        if (key === 'profile.authBindings.feishuEmailVerificationHint')
+          return 'Verification is required'
         if (key === 'profile.authBindings.confirmEmailBindAction') return 'Bind email'
         if (key === 'profile.authBindings.confirmEmailReplaceAction') return 'Replace primary email'
         if (key === 'profile.authBindings.codeSentTo') return `Code sent to ${params?.email || ''}`.trim()
@@ -116,6 +120,7 @@ describe('ProfileIdentityBindingsSection', () => {
     userApiMocks.sendEmailBindingCode.mockReset()
     userApiMocks.bindEmailIdentity.mockReset()
     userApiMocks.unbindAuthIdentity.mockReset()
+    sessionStorage.clear()
   })
 
   afterEach(() => {
@@ -558,6 +563,114 @@ describe('ProfileIdentityBindingsSection', () => {
     await wrapper.get('[data-testid="profile-binding-email-toggle"]').trigger('click')
 
     expect(wrapper.get('[data-testid="profile-binding-email-input"]').exists()).toBe(true)
+  })
+
+  it('lets the user choose the suggested Feishu email without starting verification automatically', async () => {
+    const wrapper = mount(ProfileIdentityBindingsSection, {
+      global: {
+        plugins: [pinia],
+      },
+      props: {
+        user: createUser({
+          email: 'feishu-user@feishu-connect.invalid',
+          email_bound: false,
+          auth_bindings: {
+            email: { bound: false },
+            feishu: {
+              bound: true,
+              suggested_email: 'suggested.feishu@example.com',
+            },
+          },
+        }),
+        compact: true,
+        feishuEnabled: true,
+        linuxdoEnabled: false,
+        oidcEnabled: false,
+        wechatEnabled: false,
+      },
+    })
+
+    expect(wrapper.get('[data-testid="profile-binding-feishu-email-choice"]').text()).toContain(
+      'suggested.feishu@example.com'
+    )
+    expect(
+      wrapper.get<HTMLInputElement>('[data-testid="profile-binding-feishu-email-checkbox"]').element.checked
+    ).toBe(false)
+    expect(wrapper.find('[data-testid="profile-binding-email-form"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="profile-binding-feishu-email-checkbox"]').setValue(true)
+
+    expect(wrapper.get<HTMLInputElement>('[data-testid="profile-binding-email-input"]').element.value).toBe(
+      'suggested.feishu@example.com'
+    )
+    expect(userApiMocks.sendEmailBindingCode).not.toHaveBeenCalled()
+    expect(userApiMocks.bindEmailIdentity).not.toHaveBeenCalled()
+  })
+
+  it('consumes a callback email prefill once and expands the compact verification form', () => {
+    sessionStorage.setItem(PROFILE_EMAIL_BINDING_PREFILL_KEY, 'callback.feishu@example.com')
+
+    const wrapper = mount(ProfileIdentityBindingsSection, {
+      global: {
+        plugins: [pinia],
+      },
+      props: {
+        user: createUser({
+          email: 'feishu-user@feishu-connect.invalid',
+          email_bound: false,
+          auth_bindings: {
+            email: { bound: false },
+            feishu: {
+              bound: true,
+              suggested_email: 'callback.feishu@example.com',
+            },
+          },
+        }),
+        compact: true,
+        feishuEnabled: true,
+        linuxdoEnabled: false,
+        oidcEnabled: false,
+        wechatEnabled: false,
+      },
+    })
+
+    expect(wrapper.get<HTMLInputElement>('[data-testid="profile-binding-email-input"]').element.value).toBe(
+      'callback.feishu@example.com'
+    )
+    expect(
+      wrapper.get<HTMLInputElement>('[data-testid="profile-binding-feishu-email-checkbox"]').element.checked
+    ).toBe(true)
+    expect(sessionStorage.getItem(PROFILE_EMAIL_BINDING_PREFILL_KEY)).toBeNull()
+    expect(userApiMocks.sendEmailBindingCode).not.toHaveBeenCalled()
+    expect(userApiMocks.bindEmailIdentity).not.toHaveBeenCalled()
+  })
+
+  it('hides a Feishu suggestion that matches the already bound email', () => {
+    const wrapper = mount(ProfileIdentityBindingsSection, {
+      global: {
+        plugins: [pinia],
+      },
+      props: {
+        user: createUser({
+          email: 'same@example.com',
+          email_bound: true,
+          auth_bindings: {
+            email: { bound: true },
+            feishu: {
+              bound: true,
+              suggested_email: 'same@example.com',
+            },
+          },
+        }),
+        compact: true,
+        feishuEnabled: true,
+        linuxdoEnabled: false,
+        oidcEnabled: false,
+        wechatEnabled: false,
+      },
+    })
+
+    expect(wrapper.find('[data-testid="profile-binding-feishu-email-choice"]').exists()).toBe(false)
   })
 
   it('shows third-party binding details and unbinds a connected provider', async () => {

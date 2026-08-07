@@ -201,19 +201,20 @@ type UserAuthIdentityRecord struct {
 }
 
 type UserIdentitySummary struct {
-	Provider      string     `json:"provider"`
-	Bound         bool       `json:"bound"`
-	BoundCount    int        `json:"bound_count"`
-	DisplayName   string     `json:"display_name,omitempty"`
-	AvatarURL     string     `json:"-"`
-	SubjectHint   string     `json:"subject_hint,omitempty"`
-	ProviderKey   string     `json:"provider_key,omitempty"`
-	VerifiedAt    *time.Time `json:"verified_at,omitempty"`
-	BindStartPath string     `json:"bind_start_path,omitempty"`
-	CanBind       bool       `json:"can_bind"`
-	CanUnbind     bool       `json:"can_unbind"`
-	NoteKey       string     `json:"note_key,omitempty"`
-	Note          string     `json:"note,omitempty"`
+	Provider       string     `json:"provider"`
+	Bound          bool       `json:"bound"`
+	BoundCount     int        `json:"bound_count"`
+	DisplayName    string     `json:"display_name,omitempty"`
+	SuggestedEmail string     `json:"suggested_email,omitempty"`
+	AvatarURL      string     `json:"-"`
+	SubjectHint    string     `json:"subject_hint,omitempty"`
+	ProviderKey    string     `json:"provider_key,omitempty"`
+	VerifiedAt     *time.Time `json:"verified_at,omitempty"`
+	BindStartPath  string     `json:"bind_start_path,omitempty"`
+	CanBind        bool       `json:"can_bind"`
+	CanUnbind      bool       `json:"can_unbind"`
+	NoteKey        string     `json:"note_key,omitempty"`
+	Note           string     `json:"note,omitempty"`
 }
 
 type UserIdentitySummarySet struct {
@@ -344,6 +345,9 @@ func (s *UserService) GetProfileIdentitySummaries(ctx context.Context, userID in
 		OIDC:     s.buildProviderIdentitySummary("oidc", user, records),
 		WeChat:   s.buildProviderIdentitySummary("wechat", user, records),
 		DingTalk: s.buildProviderIdentitySummary("dingtalk", user, records),
+	}
+	if summaries.Email.Bound && strings.EqualFold(strings.TrimSpace(user.Email), summaries.Feishu.SuggestedEmail) {
+		summaries.Feishu.SuggestedEmail = ""
 	}
 
 	s.applyExplicitProviderAvailability(ctx, &summaries)
@@ -769,6 +773,9 @@ func (s *UserService) buildProviderIdentitySummary(provider string, user *User, 
 	summary.Bound = true
 	summary.BoundCount = len(filtered)
 	summary.DisplayName = userAuthIdentityDisplayName(primary)
+	if provider == "feishu" {
+		summary.SuggestedEmail = NormalizeOAuthSuggestedEmail(firstStringIdentityValue(primary.Metadata, "suggested_email", "compat_email"))
+	}
 	summary.AvatarURL = strings.TrimSpace(firstStringIdentityValue(primary.Metadata, "avatar_url", "suggested_avatar_url", "headimgurl"))
 	summary.SubjectHint = maskOpaqueIdentity(primary.ProviderSubject)
 	summary.ProviderKey = strings.TrimSpace(primary.ProviderKey)

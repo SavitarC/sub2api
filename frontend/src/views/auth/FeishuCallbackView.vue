@@ -48,7 +48,7 @@
 
       <div v-else class="space-y-4">
         <div
-          v-if="adoptionRequired && (suggestedDisplayName || suggestedAvatarUrl)"
+          v-if="adoptionRequired && hasSuggestedProfileDetails"
           class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-600 dark:bg-dark-800/60"
           data-testid="feishu-profile-suggestion"
         >
@@ -66,7 +66,12 @@
               v-if="suggestedDisplayName"
               class="flex items-start gap-3 rounded-lg border border-gray-200 bg-white p-3 text-sm dark:border-dark-600 dark:bg-dark-900/50"
             >
-              <input v-model="adoptDisplayName" type="checkbox" class="mt-1 h-4 w-4" />
+              <input
+                v-model="adoptDisplayName"
+                data-testid="feishu-adopt-display-name"
+                type="checkbox"
+                class="mt-1 h-4 w-4"
+              />
               <span>
                 <span class="block font-medium text-gray-900 dark:text-white">
                   {{ t('auth.oauthFlow.useDisplayName') }}
@@ -79,13 +84,39 @@
               v-if="suggestedAvatarUrl"
               class="flex items-start gap-3 rounded-lg border border-gray-200 bg-white p-3 text-sm dark:border-dark-600 dark:bg-dark-900/50"
             >
-              <input v-model="adoptAvatar" type="checkbox" class="mt-1 h-4 w-4" />
+              <input
+                v-model="adoptAvatar"
+                data-testid="feishu-adopt-avatar"
+                type="checkbox"
+                class="mt-1 h-4 w-4"
+              />
               <img
                 :src="suggestedAvatarUrl"
                 :alt="t('auth.oauthFlow.avatarAlt', { providerName })"
                 class="h-10 w-10 rounded-full border border-gray-200 object-cover dark:border-dark-600"
               />
               <span class="break-all text-gray-500 dark:text-dark-400">{{ suggestedAvatarUrl }}</span>
+            </label>
+
+            <label
+              v-if="suggestedEmail"
+              class="flex items-start gap-3 rounded-lg border border-gray-200 bg-white p-3 text-sm dark:border-dark-600 dark:bg-dark-900/50"
+            >
+              <input
+                v-model="useSuggestedEmail"
+                data-testid="feishu-use-suggested-email"
+                type="checkbox"
+                class="mt-1 h-4 w-4"
+              />
+              <span>
+                <span class="block font-medium text-gray-900 dark:text-white">
+                  {{ t('auth.oauthFlow.useSuggestedEmail') }}
+                </span>
+                <span class="block text-gray-500 dark:text-dark-400">{{ suggestedEmail }}</span>
+                <span class="mt-1 block text-xs text-gray-500 dark:text-dark-400">
+                  {{ t('auth.oauthFlow.suggestedEmailVerificationHint') }}
+                </span>
+              </span>
             </label>
           </div>
         </div>
@@ -118,7 +149,11 @@
               }}
             </p>
             <div class="mt-4 grid gap-3 sm:grid-cols-2">
-              <button class="btn btn-secondary w-full" @click="switchToBind()">
+              <button
+                class="btn btn-secondary w-full"
+                data-testid="feishu-choose-bind-existing"
+                @click="switchToBind()"
+              >
                 {{ t('auth.oauthFlow.bindExistingAccount') }}
               </button>
               <button
@@ -139,7 +174,7 @@
           </p>
           <PendingOAuthCreateAccountForm
             test-id-prefix="feishu"
-            :initial-email="pendingEmail"
+            :initial-email="createAccountInitialEmail"
             :is-submitting="isSubmitting"
             :error-message="actionError"
             @submit="createAccount"
@@ -228,7 +263,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { AuthLayout } from '@/components/layout'
@@ -251,6 +286,7 @@ import {
   loadOAuthAffiliateCode,
   oauthAffiliatePayload
 } from '@/utils/oauthAffiliate'
+import { storeProfileEmailBindingPrefill } from '@/utils/profileEmailBinding'
 
 type FlowStep = 'none' | 'adoption' | 'choose' | 'create' | 'bind' | 'totp'
 
@@ -288,11 +324,20 @@ const bindPassword = ref('')
 const adoptionRequired = ref(false)
 const suggestedDisplayName = ref('')
 const suggestedAvatarUrl = ref('')
+const suggestedEmail = ref('')
 const adoptDisplayName = ref(true)
 const adoptAvatar = ref(true)
+const useSuggestedEmail = ref(false)
 const totpTempToken = ref('')
 const totpCode = ref('')
 const totpEmailMasked = ref('')
+
+const hasSuggestedProfileDetails = computed(
+  () => Boolean(suggestedDisplayName.value || suggestedAvatarUrl.value || suggestedEmail.value)
+)
+const createAccountInitialEmail = computed(() =>
+  useSuggestedEmail.value && suggestedEmail.value ? suggestedEmail.value : pendingEmail.value
+)
 
 function parseFragmentParams(): URLSearchParams {
   const raw = typeof window !== 'undefined' ? window.location.hash : ''
@@ -336,16 +381,31 @@ function setProfileSuggestion(completion: FeishuPendingCompletion): void {
   suggestedAvatarUrl.value = completion.suggested_avatar_url?.trim() || ''
   adoptDisplayName.value = Boolean(suggestedDisplayName.value)
   adoptAvatar.value = Boolean(suggestedAvatarUrl.value)
+
+  const email = extractSuggestedEmail(completion)
+  if (email && email !== suggestedEmail.value) {
+    suggestedEmail.value = email
+    useSuggestedEmail.value = false
+  }
+}
+
+function extractSuggestedEmail(completion: FeishuPendingCompletion): string {
+  const candidates = [completion.suggested_email, completion.compat_email]
+  for (const candidate of candidates) {
+    const email = candidate?.trim() || ''
+    if (email && !email.toLowerCase().endsWith('.invalid')) {
+      return email
+    }
+  }
+  return ''
 }
 
 function extractPendingEmail(completion: FeishuPendingCompletion): string {
   const candidates = [
     completion.existing_account_email,
-    completion.compat_email,
     completion.pending_email,
     completion.resolved_email,
-    completion.email,
-    completion.suggested_email
+    completion.email
   ]
   for (const candidate of candidates) {
     const email = candidate?.trim() || ''
@@ -354,6 +414,28 @@ function extractPendingEmail(completion: FeishuPendingCompletion): string {
     }
   }
   return ''
+}
+
+function emailsEqual(left: string, right: string): boolean {
+  const normalizedLeft = left.trim().toLowerCase()
+  const normalizedRight = right.trim().toLowerCase()
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight)
+}
+
+function currentUserHasBoundSuggestedEmail(): boolean {
+  const user = authStore.user
+  if (!user || !emailsEqual(user.email || '', suggestedEmail.value)) {
+    return false
+  }
+  if (typeof user.email_bound === 'boolean') {
+    return user.email_bound
+  }
+
+  const binding = user.auth_bindings?.email ?? user.identity_bindings?.email
+  if (typeof binding === 'boolean') {
+    return binding
+  }
+  return binding?.bound === true
 }
 
 function resolvePendingStep(completion: FeishuPendingCompletion): FlowStep {
@@ -427,12 +509,36 @@ function localizedCallbackError(code: string, description?: string): string {
   return description?.trim() || code || t('auth.loginFailed')
 }
 
-async function finalizeCompletion(completion: FeishuPendingCompletion): Promise<void> {
+function redirectAfterCompletion(
+  fallback: string,
+  completionRedirect?: string,
+  emailBindingHandled = false
+): string {
+  if (
+    !emailBindingHandled &&
+    useSuggestedEmail.value &&
+    storeProfileEmailBindingPrefill(suggestedEmail.value)
+  ) {
+    return '/profile'
+  }
+  return sanitizeRedirectPath(completionRedirect, fallback)
+}
+
+async function finalizeCompletion(
+  completion: FeishuPendingCompletion,
+  emailBindingHandled = false
+): Promise<void> {
   if (getOAuthCompletionKind(completion) === 'bind') {
     authStore.clearPendingAuthSession()
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('profile.authBindings.bindSuccess'))
-    await router.replace(sanitizeRedirectPath(completion.redirect, '/profile'))
+    await router.replace(
+      redirectAfterCompletion(
+        '/profile',
+        completion.redirect,
+        emailBindingHandled || currentUserHasBoundSuggestedEmail()
+      )
+    )
     return
   }
 
@@ -445,13 +551,21 @@ async function finalizeCompletion(completion: FeishuPendingCompletion): Promise<
   authStore.clearPendingAuthSession()
   clearAllAffiliateReferralCodes()
   appStore.showSuccess(t('auth.loginSuccess'))
-  await router.replace(redirectTo.value)
+  await router.replace(
+    redirectAfterCompletion(redirectTo.value, undefined, emailBindingHandled)
+  )
+}
+
+type ApplyCompletionOptions = {
+  adoptionHandled?: boolean
+  emailBindingHandled?: boolean
 }
 
 async function applyCompletion(
   completion: FeishuPendingCompletion,
-  adoptionHandled = false
+  options: ApplyCompletionOptions = {}
 ): Promise<void> {
+  const { adoptionHandled = false, emailBindingHandled = false } = options
   setProfileSuggestion(completion)
   canCreateAccount.value = completion.create_account_allowed !== false
   redirectTo.value = sanitizeRedirectPath(completion.redirect, redirectTo.value)
@@ -479,7 +593,7 @@ async function applyCompletion(
     if (
       !adoptionHandled &&
       adoptionRequired.value &&
-      (suggestedDisplayName.value || suggestedAvatarUrl.value)
+      hasSuggestedProfileDetails.value
     ) {
       flowStep.value = 'adoption'
       persistPendingSession()
@@ -498,7 +612,7 @@ async function applyCompletion(
   if (
     !adoptionHandled &&
     adoptionRequired.value &&
-    (suggestedDisplayName.value || suggestedAvatarUrl.value)
+    hasSuggestedProfileDetails.value
   ) {
     flowStep.value = 'adoption'
     persistPendingSession()
@@ -506,11 +620,15 @@ async function applyCompletion(
     return
   }
 
-  await finalizeCompletion(completion)
+  await finalizeCompletion(completion, emailBindingHandled)
 }
 
 function switchToBind(email?: string): void {
-  bindEmail.value = email?.trim() || bindEmail.value || pendingEmail.value
+  bindEmail.value =
+    email?.trim() ||
+    (useSuggestedEmail.value ? suggestedEmail.value : '') ||
+    bindEmail.value ||
+    pendingEmail.value
   bindPassword.value = ''
   actionError.value = ''
   flowStep.value = 'bind'
@@ -529,7 +647,7 @@ async function continueAfterAdoption(): Promise<void> {
   try {
     await applyCompletion(
       await exchangePendingOAuthCompletion(currentAdoptionDecision()),
-      true
+      { adoptionHandled: true }
     )
   } catch (error) {
     const message = requestErrorMessage(error, t('auth.loginFailed'))
@@ -588,7 +706,7 @@ async function createAccount(payload: PendingOAuthCreateAccountPayload): Promise
         ...serializeAdoptionDecision(currentAdoptionDecision())
       }
     )
-    await applyCompletion(data)
+    await applyCompletion(data, { adoptionHandled: true, emailBindingHandled: true })
   } catch (error) {
     actionError.value = requestErrorMessage(error, t('auth.feishu.completeRegistrationFailed'))
   } finally {
@@ -606,7 +724,10 @@ async function bindExistingAccount(): Promise<void> {
       password: bindPassword.value,
       ...serializeAdoptionDecision(currentAdoptionDecision())
     })
-    await applyCompletion(data)
+    await applyCompletion(data, {
+      adoptionHandled: true,
+      emailBindingHandled: emailsEqual(bindEmail.value, suggestedEmail.value)
+    })
   } catch (error) {
     actionError.value = requestErrorMessage(error, t('auth.loginFailed'))
   } finally {
@@ -628,7 +749,13 @@ async function submitTotp(): Promise<void> {
     authStore.clearPendingAuthSession()
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
-    await router.replace(redirectTo.value)
+    await router.replace(
+      redirectAfterCompletion(
+        redirectTo.value,
+        undefined,
+        emailsEqual(bindEmail.value, suggestedEmail.value)
+      )
+    )
   } catch (error) {
     actionError.value = requestErrorMessage(error, t('auth.loginFailed'))
   } finally {

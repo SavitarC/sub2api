@@ -132,6 +132,24 @@ describe('PendingOAuthCreateAccountForm', () => {
     ])
   })
 
+  it('updates the email field when the OAuth suggestion selection changes', async () => {
+    const wrapper = mount(PendingOAuthCreateAccountForm, {
+      props: {
+        testIdPrefix: 'feishu',
+        initialEmail: '',
+        isSubmitting: false
+      }
+    })
+
+    await wrapper.setProps({ initialEmail: 'suggested.feishu@example.com' })
+    expect(wrapper.get<HTMLInputElement>('[data-testid="feishu-create-account-email"]').element.value).toBe(
+      'suggested.feishu@example.com'
+    )
+
+    await wrapper.setProps({ initialEmail: '' })
+    expect(wrapper.get<HTMLInputElement>('[data-testid="feishu-create-account-email"]').element.value).toBe('')
+  })
+
   it('renders action labels through i18n keys', () => {
     const wrapper = mount(PendingOAuthCreateAccountForm, {
       props: {

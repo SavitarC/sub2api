@@ -87,6 +87,29 @@
                 </p>
               </div>
 
+              <label
+                v-if="item.provider === 'email' && feishuSuggestedEmail"
+                data-testid="profile-binding-feishu-email-choice"
+                class="flex items-start gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm dark:border-dark-600 dark:bg-dark-900/40"
+              >
+                <input
+                  :checked="isFeishuSuggestedEmailSelected"
+                  data-testid="profile-binding-feishu-email-checkbox"
+                  type="checkbox"
+                  class="mt-1 h-4 w-4"
+                  @change="toggleFeishuSuggestedEmail"
+                />
+                <span>
+                  <span class="block font-medium text-gray-900 dark:text-white">
+                    {{ t('profile.authBindings.useFeishuSuggestedEmail') }}
+                  </span>
+                  <span class="block text-gray-500 dark:text-dark-400">{{ feishuSuggestedEmail }}</span>
+                  <span class="mt-1 block text-xs text-gray-500 dark:text-dark-400">
+                    {{ t('profile.authBindings.feishuEmailVerificationHint') }}
+                  </span>
+                </span>
+              </label>
+
               <div
                 v-if="item.provider === 'email' && showEmailForm"
                 data-testid="profile-binding-email-form"
@@ -210,6 +233,7 @@ import {
 import Icon from '@/components/icons/Icon.vue'
 import { useAppStore, useAuthStore } from '@/stores'
 import type { User, UserAuthBindingStatus, UserAuthProvider } from '@/types'
+import { consumeProfileEmailBindingPrefill } from '@/utils/profileEmailBinding'
 
 type BindableProvider = Exclude<UserAuthProvider, 'email'>
 
@@ -245,14 +269,15 @@ const { t } = useI18n()
 const route = useRoute()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const initialEmailBindingPrefill = consumeProfileEmailBindingPrefill()
 
 const localUser = ref<User | null>(null)
 const isSendingEmailCode = ref(false)
 const isBindingEmail = ref(false)
-const isEmailFormExpanded = ref(!props.compact)
+const isEmailFormExpanded = ref(!props.compact || Boolean(initialEmailBindingPrefill))
 const unbindingProvider = ref<BindableProvider | null>(null)
 const emailBindingForm = reactive({
-  email: '',
+  email: initialEmailBindingPrefill,
   verifyCode: '',
   password: '',
 })
@@ -264,7 +289,10 @@ watch(
     if (!user) {
       return
     }
-    if (typeof user.email === 'string' && !user.email.endsWith('.invalid')) {
+    if (initialEmailBindingPrefill) {
+      return
+    }
+    if (typeof user.email === 'string' && !user.email.toLowerCase().endsWith('.invalid')) {
       emailBindingForm.email = user.email
     }
   },
@@ -292,6 +320,22 @@ const rowClass = computed(() =>
 )
 const emailBound = computed(() => getBindingStatus('email'))
 const showEmailForm = computed(() => !compact.value || isEmailFormExpanded.value)
+const feishuSuggestedEmail = computed(() => {
+  const email = getBindingDetails('feishu')?.suggested_email?.trim() || ''
+  if (!email || email.toLowerCase().endsWith('.invalid')) {
+    return ''
+  }
+  if (
+    emailBound.value &&
+    email.toLowerCase() === getDisplayableEmail(currentUser.value).toLowerCase()
+  ) {
+    return ''
+  }
+  return email
+})
+const isFeishuSuggestedEmailSelected = computed(
+  () => Boolean(feishuSuggestedEmail.value) && emailBindingForm.email === feishuSuggestedEmail.value
+)
 const emailPasswordPlaceholder = computed(() =>
   emailBound.value
     ? t('profile.authBindings.replaceEmailPasswordPlaceholder')
@@ -572,6 +616,20 @@ function hasBindingDetails(
 
 function toggleEmailForm(): void {
   isEmailFormExpanded.value = !isEmailFormExpanded.value
+}
+
+function toggleFeishuSuggestedEmail(event: Event): void {
+  const checked = (event.target as HTMLInputElement).checked
+  if (checked) {
+    emailBindingForm.email = feishuSuggestedEmail.value
+    emailBindingForm.verifyCode = ''
+    isEmailFormExpanded.value = true
+    return
+  }
+  if (emailBindingForm.email === feishuSuggestedEmail.value) {
+    emailBindingForm.email = ''
+    emailBindingForm.verifyCode = ''
+  }
 }
 
 function startBinding(provider: UserAuthProvider): void {

@@ -97,4 +97,34 @@ describe('ProfileView', () => {
     expect(wrapper.get('[data-testid="profile-shell"]').html()).toContain('profile-password-form')
     expect(wrapper.get('[data-testid="profile-shell"]').html()).toContain('profile-totp-card')
   })
+
+  it('hides the password form when the user has no bound email identity', async () => {
+    authState.user = {
+      ...authState.user,
+      email: 'feishu-user@feishu-connect.invalid',
+      email_bound: false,
+      auth_bindings: {
+        email: { bound: false },
+        feishu: { bound: true }
+      }
+    }
+
+    const wrapper = mount(ProfileView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          ProfileInfoCard: { template: '<div data-testid="profile-info-card" />' },
+          ProfileBalanceNotifyCard: true,
+          ProfilePasswordForm: { template: '<div data-testid="profile-password-form" />' },
+          ProfileTotpCard: true,
+          ProfilePasskeyCard: true,
+          Icon: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="profile-password-form"]').exists()).toBe(false)
+  })
 })

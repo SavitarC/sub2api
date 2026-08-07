@@ -33,7 +33,7 @@
         </div>
       </div>
 
-      <ProfilePasswordForm />
+      <ProfilePasswordForm v-if="canChangePassword" />
 
       <ProfileBalanceNotifyCard
         v-if="user && balanceLowNotifyEnabled"
@@ -68,6 +68,26 @@ const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 const user = computed(() => authStore.user)
+const canChangePassword = computed(() => {
+  const currentUser = user.value
+  if (!currentUser) {
+    return false
+  }
+  if (typeof currentUser.email_bound === 'boolean') {
+    return currentUser.email_bound
+  }
+
+  const binding = currentUser.auth_bindings?.email ?? currentUser.identity_bindings?.email
+  if (typeof binding === 'boolean') {
+    return binding
+  }
+  if (binding && typeof binding.bound === 'boolean') {
+    return binding.bound
+  }
+
+  const email = currentUser.email?.trim() || ''
+  return Boolean(email && !email.toLowerCase().endsWith('.invalid'))
+})
 
 const contactInfo = ref('')
 const balanceLowNotifyEnabled = ref(false)

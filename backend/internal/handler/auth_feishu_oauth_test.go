@@ -62,6 +62,8 @@ func TestFeishuOAuthCallback_MockedFreshAccountPromptsForProfileBeforeTokenExcha
 	preview := decodeJSONResponseData(t, previewRecorder)
 	require.Equal(t, true, preview["adoption_required"])
 	require.Equal(t, "飞书 Mock 用户", preview["suggested_display_name"])
+	require.Equal(t, "fresh@example.com", preview["suggested_email"])
+	require.NotContains(t, preview, "compat_email")
 	require.NotContains(t, preview, "access_token")
 	unconsumedSession, err := client.PendingAuthSession.Get(ctx, session.ID)
 	require.NoError(t, err)
@@ -88,6 +90,8 @@ func TestFeishuOAuthCallback_MockedFreshAccountPromptsForProfileBeforeTokenExcha
 	require.NotEmpty(t, accessToken)
 	require.NotEmpty(t, payload["refresh_token"])
 	require.Equal(t, "/dashboard", payload["redirect"])
+	require.Equal(t, "fresh@example.com", payload["suggested_email"])
+	require.NotContains(t, payload, "compat_email")
 	identity, err := client.AuthIdentity.Query().
 		Where(
 			authidentity.ProviderTypeEQ("feishu"),
@@ -105,6 +109,11 @@ func TestFeishuOAuthCallback_MockedFreshAccountPromptsForProfileBeforeTokenExcha
 	require.Equal(t, feishuSyntheticEmail("cli_mock", "ou_mock_fresh"), userEntity.Email)
 	require.Equal(t, "feishu", userEntity.SignupSource)
 	require.Equal(t, "飞书 Mock 用户", userEntity.Username)
+	emailIdentityCount, err := client.AuthIdentity.Query().
+		Where(authidentity.ProviderTypeEQ("email")).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Zero(t, emailIdentityCount)
 
 	consumedSession, err := client.PendingAuthSession.Get(ctx, session.ID)
 	require.NoError(t, err)
@@ -146,6 +155,7 @@ func TestFeishuOAuthCallback_FreshAccountRequiresMatchingBrowserSession(t *testi
 
 	require.NotEqual(t, http.StatusOK, exchangeRecorder.Code)
 	require.NotContains(t, exchangeRecorder.Body.String(), "access_token")
+	require.NotContains(t, exchangeRecorder.Body.String(), "fresh@example.com")
 	session, err := client.PendingAuthSession.Query().
 		Where(pendingauthsession.SessionTokenEQ(sessionToken)).
 		Only(context.Background())
@@ -254,6 +264,9 @@ func TestFeishuOAuthCallback_MockedExistingIdentityExchangesPendingForToken(t *t
 	require.NotEmpty(t, accessToken)
 	require.NotEmpty(t, payload["refresh_token"])
 	require.Equal(t, "/dashboard", payload["redirect"])
+	require.Equal(t, "existing@example.com", payload["suggested_email"])
+	require.NotContains(t, payload, "compat_email")
+	require.NotContains(t, payload, "adoption_required")
 
 	claims, err := handler.authService.ValidateToken(accessToken)
 	require.NoError(t, err)

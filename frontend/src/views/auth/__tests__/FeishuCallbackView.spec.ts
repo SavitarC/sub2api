@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import PendingOAuthCreateAccountForm from '@/components/auth/PendingOAuthCreateAccountForm.vue'
+import { PROFILE_EMAIL_BINDING_PREFILL_KEY } from '@/utils/profileEmailBinding'
 import FeishuCallbackView from '../FeishuCallbackView.vue'
 
 const routeState = vi.hoisted(() => ({
@@ -17,6 +18,9 @@ const exchangePendingOAuthCompletion = vi.fn()
 const login2FA = vi.fn()
 const getPublicSettings = vi.fn()
 const apiClientPost = vi.fn()
+const authState = vi.hoisted(() => ({
+  user: null as Record<string, unknown> | null
+}))
 
 vi.mock('vue-router', () => ({
   useRoute: () => routeState,
@@ -36,6 +40,7 @@ vi.mock('vue-i18n', async () => {
 
 vi.mock('@/stores', () => ({
   useAuthStore: () => ({
+    user: authState.user,
     setToken,
     setPendingAuthSession,
     clearPendingAuthSession
@@ -74,6 +79,7 @@ function mountView() {
 describe('FeishuCallbackView', () => {
   beforeEach(() => {
     routeState.query = {}
+    authState.user = null
     replace.mockReset()
     showSuccess.mockReset()
     showError.mockReset()
@@ -191,7 +197,8 @@ describe('FeishuCallbackView', () => {
       auth_result: 'pending_session',
       provider: 'feishu',
       step: 'create_account_required',
-      pending_email: 'mock.feishu@example.com',
+      pending_email: 'account.default@example.com',
+      suggested_email: 'mock.feishu@example.com',
       adoption_required: true,
       suggested_display_name: 'Mock Feishu User',
       suggested_avatar_url: 'data:image/png;base64,bW9jay1mZWlzaHU=',
@@ -210,6 +217,15 @@ describe('FeishuCallbackView', () => {
     expect(wrapper.text()).toContain('Mock Feishu User')
     expect(wrapper.get('[data-testid="feishu-create-account-email"]').element).toHaveProperty(
       'value',
+      'account.default@example.com'
+    )
+    expect(wrapper.get<HTMLInputElement>('[data-testid="feishu-use-suggested-email"]').element.checked).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="feishu-adopt-display-name"]').element.checked).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="feishu-adopt-avatar"]').element.checked).toBe(true)
+
+    await wrapper.get('[data-testid="feishu-use-suggested-email"]').setValue(true)
+    expect(wrapper.get('[data-testid="feishu-create-account-email"]').element).toHaveProperty(
+      'value',
       'mock.feishu@example.com'
     )
     await wrapper.get('[data-testid="feishu-create-account-password"]').setValue('mock-secret')
@@ -225,6 +241,8 @@ describe('FeishuCallbackView', () => {
       adopt_avatar: true
     })
     expect(setToken).toHaveBeenCalledWith('created-feishu-access-token')
+    expect(sessionStorage.getItem(PROFILE_EMAIL_BINDING_PREFILL_KEY)).toBeNull()
+    expect(replace).toHaveBeenCalledWith('/dashboard')
   })
 
   it('forwards captcha proof when creating a pending Feishu account', async () => {
@@ -274,6 +292,8 @@ describe('FeishuCallbackView', () => {
       provider: 'feishu',
       step: 'bind_login_required',
       existing_account_email: 'existing@example.com',
+      adoption_required: true,
+      suggested_email: 'existing@example.com',
       create_account_allowed: false
     })
     apiClientPost.mockResolvedValue({
@@ -286,6 +306,7 @@ describe('FeishuCallbackView', () => {
     const wrapper = mountView()
     await flushPromises()
     expect(wrapper.find('[data-testid="feishu-bind-create-account"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="feishu-use-suggested-email"]').setValue(true)
     await wrapper.get('[data-testid="feishu-bind-login-password"]').setValue('existing-secret')
     await wrapper.get('[data-testid="feishu-bind-login-submit"]').trigger('click')
     await flushPromises()
@@ -298,7 +319,29 @@ describe('FeishuCallbackView', () => {
     })
     expect(setToken).not.toHaveBeenCalled()
     expect(showSuccess).toHaveBeenCalledWith('profile.authBindings.bindSuccess')
+    expect(sessionStorage.getItem(PROFILE_EMAIL_BINDING_PREFILL_KEY)).toBeNull()
     expect(replace).toHaveBeenCalledWith('/profile')
+  })
+
+  it('prefills existing-account login with the selected Feishu email from the choice step', async () => {
+    exchangePendingOAuthCompletion.mockResolvedValue({
+      auth_result: 'pending_session',
+      provider: 'feishu',
+      step: 'choice',
+      adoption_required: true,
+      suggested_email: 'choice.feishu@example.com',
+      create_account_allowed: true
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="feishu-use-suggested-email"]').setValue(true)
+    await wrapper.get('[data-testid="feishu-choose-bind-existing"]').trigger('click')
+
+    expect(wrapper.get<HTMLInputElement>('[data-testid="feishu-bind-login-email"]').element.value).toBe(
+      'choice.feishu@example.com'
+    )
   })
 
   it('does not prefill a synthetic Feishu address when registration is disabled', async () => {
@@ -367,6 +410,42 @@ describe('FeishuCallbackView', () => {
     expect(setToken).not.toHaveBeenCalled()
   })
 
+  it('keeps the selected Feishu email out of adoption and opens profile verification', async () => {
+    exchangePendingOAuthCompletion
+      .mockResolvedValueOnce({
+        auth_result: 'pending_session',
+        provider: 'feishu',
+        adoption_required: true,
+        suggested_display_name: 'Mock Feishu User',
+        suggested_avatar_url: 'https://example.com/mock-avatar.png',
+        suggested_email: 'profile.feishu@example.com',
+        redirect: '/dashboard'
+      })
+      .mockResolvedValueOnce({
+        access_token: 'adopted-feishu-access-token',
+        redirect: '/dashboard'
+      })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get<HTMLInputElement>('[data-testid="feishu-use-suggested-email"]').element.checked).toBe(false)
+    await wrapper.get('[data-testid="feishu-adopt-display-name"]').setValue(false)
+    await wrapper.get('[data-testid="feishu-use-suggested-email"]').setValue(true)
+    await wrapper.get('[data-testid="feishu-adoption-continue"]').trigger('click')
+    await flushPromises()
+
+    expect(exchangePendingOAuthCompletion).toHaveBeenNthCalledWith(2, {
+      adoptDisplayName: false,
+      adoptAvatar: true
+    })
+    expect(setToken).toHaveBeenCalledWith('adopted-feishu-access-token')
+    expect(sessionStorage.getItem(PROFILE_EMAIL_BINDING_PREFILL_KEY)).toBe(
+      'profile.feishu@example.com'
+    )
+    expect(replace).toHaveBeenCalledWith('/profile')
+  })
+
   it('finishes a current-account binding after profile adoption is confirmed', async () => {
     exchangePendingOAuthCompletion
       .mockResolvedValueOnce({
@@ -374,6 +453,7 @@ describe('FeishuCallbackView', () => {
         provider: 'feishu',
         adoption_required: true,
         suggested_display_name: 'Mock Feishu User',
+        suggested_email: 'bind.feishu@example.com',
         redirect: '/profile'
       })
       .mockResolvedValueOnce({
@@ -386,6 +466,7 @@ describe('FeishuCallbackView', () => {
 
     const wrapper = mountView()
     await flushPromises()
+    await wrapper.get('[data-testid="feishu-use-suggested-email"]').setValue(true)
     await wrapper.get('[data-testid="feishu-adoption-continue"]').trigger('click')
     await flushPromises()
 
@@ -394,6 +475,42 @@ describe('FeishuCallbackView', () => {
       adoptAvatar: false
     })
     expect(clearPendingAuthSession).toHaveBeenCalled()
+    expect(showSuccess).toHaveBeenCalledWith('profile.authBindings.bindSuccess')
+    expect(sessionStorage.getItem(PROFILE_EMAIL_BINDING_PREFILL_KEY)).toBe(
+      'bind.feishu@example.com'
+    )
+    expect(replace).toHaveBeenCalledWith('/profile')
+  })
+
+  it('does not reopen email binding after current-account bind when the same email is already bound', async () => {
+    authState.user = {
+      email: 'same.feishu@example.com',
+      email_bound: true,
+      auth_bindings: {
+        email: { bound: true }
+      }
+    }
+    exchangePendingOAuthCompletion
+      .mockResolvedValueOnce({
+        auth_result: 'pending_session',
+        provider: 'feishu',
+        adoption_required: true,
+        suggested_display_name: 'Mock Feishu User',
+        suggested_email: 'same.feishu@example.com',
+        redirect: '/profile'
+      })
+      .mockResolvedValueOnce({
+        auth_result: 'bound',
+        redirect: '/profile'
+      })
+
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="feishu-use-suggested-email"]').setValue(true)
+    await wrapper.get('[data-testid="feishu-adoption-continue"]').trigger('click')
+    await flushPromises()
+
+    expect(sessionStorage.getItem(PROFILE_EMAIL_BINDING_PREFILL_KEY)).toBeNull()
     expect(showSuccess).toHaveBeenCalledWith('profile.authBindings.bindSuccess')
     expect(replace).toHaveBeenCalledWith('/profile')
   })

@@ -373,9 +373,11 @@ export default {
     },
     oauthFlow: {
       profileDetailsTitle: 'Use {providerName} profile details',
-      profileDetailsDescription: 'Choose whether to apply the nickname or avatar from {providerName} to this account.',
+      profileDetailsDescription: 'Choose which profile details from {providerName} to use for this account.',
       useDisplayName: 'Use display name',
       useAvatar: 'Use avatar',
+      useSuggestedEmail: 'Use Feishu email',
+      suggestedEmailVerificationHint: 'This only prefills the email form. The address is not bound until you verify it.',
       avatarAlt: '{providerName} avatar',
       reviewProfileBeforeContinue: 'Review the {providerName} profile details before continuing.',
       chooseHowToContinue: 'Choose how to continue',

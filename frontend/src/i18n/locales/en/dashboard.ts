@@ -822,6 +822,8 @@ export default {
       sendCodeAction: 'Send code',
       manageEmailAction: 'Manage email',
       hideEmailFormAction: 'Hide email form',
+      useFeishuSuggestedEmail: 'Use Feishu email',
+      feishuEmailVerificationHint: 'This only prefills the email form. The address is not bound until you verify it.',
       confirmEmailBindAction: 'Bind email',
       confirmEmailReplaceAction: 'Replace primary email',
       codeSentTo: 'Code sent to {email}',

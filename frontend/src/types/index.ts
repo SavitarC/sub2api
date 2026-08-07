@@ -54,6 +54,7 @@ export interface UserAuthBindingStatus {
   label?: string | null
   provider_label?: string | null
   display_name?: string | null
+  suggested_email?: string | null
   subject_hint?: string | null
   verified_at?: string | null
   bind_start_path?: string | null

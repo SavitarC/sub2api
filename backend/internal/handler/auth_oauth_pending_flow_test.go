@@ -40,7 +40,10 @@ func TestApplySuggestedProfileToCompletionResponse(t *testing.T) {
 		"suggested_avatar_url":   "https://cdn.example/avatar.png",
 	}
 
-	applySuggestedProfileToCompletionResponse(payload, upstream)
+	applySuggestedProfileToCompletionResponse(payload, &dbent.PendingAuthSession{
+		ProviderType:           "oidc",
+		UpstreamIdentityClaims: upstream,
+	})
 
 	require.Equal(t, "Alice", payload["suggested_display_name"])
 	require.Equal(t, "https://cdn.example/avatar.png", payload["suggested_avatar_url"])
@@ -57,11 +60,56 @@ func TestApplySuggestedProfileToCompletionResponseKeepsExistingPayloadValues(t *
 		"suggested_avatar_url":   "https://cdn.example/avatar.png",
 	}
 
-	applySuggestedProfileToCompletionResponse(payload, upstream)
+	applySuggestedProfileToCompletionResponse(payload, &dbent.PendingAuthSession{
+		ProviderType:           "oidc",
+		UpstreamIdentityClaims: upstream,
+	})
 
 	require.Equal(t, "Existing", payload["suggested_display_name"])
 	require.Equal(t, "https://cdn.example/avatar.png", payload["suggested_avatar_url"])
 	require.Equal(t, true, payload["adoption_required"])
+}
+
+func TestApplySuggestedProfileToCompletionResponseProjectsOnlySafeFeishuEmail(t *testing.T) {
+	tests := []struct {
+		name      string
+		provider  string
+		email     string
+		wantEmail string
+	}{
+		{name: "normalized feishu email", provider: "feishu", email: "  User@Example.com ", wantEmail: "user@example.com"},
+		{name: "malformed feishu email", provider: "feishu", email: "not-an-email"},
+		{name: "reserved feishu email", provider: "feishu", email: "user@feishu-connect.invalid"},
+		{name: "other provider", provider: "oidc", email: "user@example.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := map[string]any{"redirect": "/dashboard", "compat_email": tt.email}
+			applySuggestedProfileToCompletionResponse(payload, &dbent.PendingAuthSession{
+				ProviderType: tt.provider,
+				UpstreamIdentityClaims: map[string]any{
+					"compat_email": tt.email,
+				},
+			})
+
+			if tt.wantEmail == "" {
+				require.NotContains(t, payload, "suggested_email")
+				if tt.provider == "feishu" {
+					require.NotContains(t, payload, "adoption_required")
+				}
+			} else {
+				require.Equal(t, tt.wantEmail, payload["suggested_email"])
+				require.Equal(t, true, payload["adoption_required"])
+			}
+			if tt.provider == "feishu" {
+				require.NotContains(t, payload, "compat_email")
+			} else {
+				require.Equal(t, tt.email, payload["compat_email"])
+				require.NotContains(t, payload, "adoption_required")
+			}
+		})
+	}
 }
 
 func TestSetOAuthPendingSessionCookieUsesProviderCompletionPathPrefix(t *testing.T) {

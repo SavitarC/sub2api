@@ -371,9 +371,11 @@ export default {
     },
     oauthFlow: {
       profileDetailsTitle: '使用 {providerName} 资料',
-      profileDetailsDescription: '选择是否将 {providerName} 的昵称或头像应用到当前账户。',
+      profileDetailsDescription: '选择要用于当前账户的 {providerName} 资料。',
       useDisplayName: '使用昵称',
       useAvatar: '使用头像',
+      useSuggestedEmail: '使用飞书邮箱',
+      suggestedEmailVerificationHint: '这里只会预填邮箱表单，完成邮箱验证码验证后才会绑定。',
       avatarAlt: '{providerName} 头像',
       reviewProfileBeforeContinue: '请先确认 {providerName} 资料后再继续。',
       chooseHowToContinue: '选择后续操作',

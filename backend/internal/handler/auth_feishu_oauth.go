@@ -252,7 +252,7 @@ func (h *AuthHandler) FeishuOAuthCallback(c *gin.Context) {
 		ProviderSubject: providerSubject,
 	}
 	syntheticEmail := feishuSyntheticEmail(cfg.ClientID, providerSubject)
-	compatEmail := firstNonEmpty(profile.EnterpriseEmail, profile.Email)
+	compatEmail := service.NormalizeOAuthSuggestedEmail(firstNonEmpty(profile.EnterpriseEmail, profile.Email))
 	username := feishuSyntheticUsername(cfg.ClientID, providerSubject)
 	displayName := firstNonEmpty(profile.Name, profile.EnglishName, username)
 	claims := map[string]any{
@@ -267,6 +267,7 @@ func (h *AuthHandler) FeishuOAuthCallback(c *gin.Context) {
 	}
 	if compatEmail != "" {
 		claims["compat_email"] = compatEmail
+		claims["suggested_email"] = compatEmail
 	}
 
 	if intent == oauthIntentBindCurrentUser {

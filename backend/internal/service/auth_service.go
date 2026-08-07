@@ -1292,6 +1292,28 @@ func isReservedEmail(email string) bool {
 		strings.HasSuffix(normalized, FeishuConnectSyntheticEmailDomain)
 }
 
+// NormalizeOAuthSuggestedEmail returns a frontend-safe email hint. OAuth
+// provider emails remain untrusted until the user verifies and binds them.
+func NormalizeOAuthSuggestedEmail(email string) string {
+	normalized := strings.ToLower(strings.TrimSpace(email))
+	if normalized == "" || len(normalized) > 255 || strings.ContainsAny(normalized, "\r\n\x00") {
+		return ""
+	}
+	parsed, err := mail.ParseAddress(normalized)
+	if err != nil || parsed.Address != normalized || isReservedEmail(normalized) {
+		return ""
+	}
+	at := strings.LastIndexByte(normalized, '@')
+	if at < 0 {
+		return ""
+	}
+	domain := normalized[at+1:]
+	if domain == "invalid" || strings.HasSuffix(domain, ".invalid") {
+		return ""
+	}
+	return normalized
+}
+
 // GenerateToken 生成JWT access token
 // 使用新的access_token_expire_minutes配置项（如果配置了），否则回退到expire_hour。
 // 会话指纹（IP/UA）从 ctx 中提取（由 HTTP 入口中间件注入），缺失时生成不带绑定的 token。
