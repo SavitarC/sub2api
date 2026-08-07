@@ -52,10 +52,11 @@ func (s *orderedOpenAIFastPolicyRepo) Set(ctx context.Context, key, value string
 	if err := s.openAIFastPolicyRepoStub.Set(ctx, key, value); err != nil {
 		return err
 	}
-	if call == 1 {
+	switch call {
+	case 1:
 		close(s.firstPersisted)
 		<-s.releaseFirst
-	} else if call == 2 {
+	case 2:
 		close(s.secondEntered)
 	}
 	return nil
