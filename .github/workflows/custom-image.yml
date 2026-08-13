@@ -1,0 +1,62 @@
+name: Build Custom Image
+
+on:
+  push:
+    branches:
+      - custom
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # 固定高于官方版本号，避免应用内“在线更新”覆盖自定义二进制。
+  CUSTOM_VERSION: 0.1.999-custom
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        shell: bash
+        run: |
+          OWNER=$(echo "${{ github.repository }}" | cut -d/ -f1 | tr '[:upper:]' '[:lower:]')
+          REPO=$(echo "${{ github.repository }}" | cut -d/ -f2 | tr '[:upper:]' '[:lower:]')
+          BASE="ghcr.io/${OWNER}/${REPO}"
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "date_tag=custom-$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=custom-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ env.CUSTOM_VERSION }}
+          tags: |
+            ${{ steps.meta.outputs.base }}:custom
+            ${{ steps.meta.outputs.base }}:${{ steps.meta.outputs.date_tag }}
+            ${{ steps.meta.outputs.base }}:${{ steps.meta.outputs.sha_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
