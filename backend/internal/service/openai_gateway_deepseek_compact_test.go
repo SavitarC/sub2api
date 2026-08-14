@@ -785,13 +785,13 @@ func deepSeekRemoteCompactChatResponse(content, reasoning, finishReason string) 
 func deepSeekRemoteCompactRawChatResponse(payloads ...string) *http.Response {
 	var stream strings.Builder
 	for _, payload := range payloads {
-		stream.WriteString("data: ")
-		stream.WriteString(payload)
-		stream.WriteString("\n\n")
+		_, _ = stream.WriteString("data: ")
+		_, _ = stream.WriteString(payload)
+		_, _ = stream.WriteString("\n\n")
 	}
-	stream.WriteString(`data: {"id":"chatcmpl_compact","model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":31,"completion_tokens":7,"total_tokens":38,"prompt_tokens_details":{"cached_tokens":5},"completion_tokens_details":{"reasoning_tokens":3}}}`)
-	stream.WriteString("\n\n")
-	stream.WriteString("data: [DONE]\n\n")
+	_, _ = stream.WriteString(`data: {"id":"chatcmpl_compact","model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":31,"completion_tokens":7,"total_tokens":38,"prompt_tokens_details":{"cached_tokens":5},"completion_tokens_details":{"reasoning_tokens":3}}}`)
+	_, _ = stream.WriteString("\n\n")
+	_, _ = stream.WriteString("data: [DONE]\n\n")
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header: http.Header{

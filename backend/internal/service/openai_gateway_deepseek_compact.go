@@ -354,9 +354,10 @@ func consumeDeepSeekResponsesJSONToken(
 	}
 	switch delim {
 	case '{':
-		if mode == deepSeekResponsesJSONScanInput {
+		switch mode {
+		case deepSeekResponsesJSONScanInput:
 			mode = deepSeekResponsesJSONScanInputItem
-		} else if mode == deepSeekResponsesJSONScanContent {
+		case deepSeekResponsesJSONScanContent:
 			mode = deepSeekResponsesJSONScanContentItem
 		}
 		var seen uint64
@@ -424,9 +425,10 @@ func consumeDeepSeekResponsesJSONToken(
 		}
 	case '[':
 		childMode := deepSeekResponsesJSONScanGeneric
-		if mode == deepSeekResponsesJSONScanInput {
+		switch mode {
+		case deepSeekResponsesJSONScanInput:
 			childMode = deepSeekResponsesJSONScanInputItem
-		} else if mode == deepSeekResponsesJSONScanContent {
+		case deepSeekResponsesJSONScanContent:
 			childMode = deepSeekResponsesJSONScanContentItem
 		}
 		for decoder.More() {
@@ -728,7 +730,7 @@ func normalizeDeepSeekCompactTextContent(raw json.RawMessage) (json.RawMessage, 
 	for _, partRaw := range parts {
 		var partText string
 		if err := json.Unmarshal(partRaw, &partText); err == nil {
-			joined.WriteString(partText)
+			_, _ = joined.WriteString(partText)
 			foundText = true
 			continue
 		}
@@ -737,7 +739,7 @@ func normalizeDeepSeekCompactTextContent(raw json.RawMessage) (json.RawMessage, 
 			continue
 		}
 		if err := json.Unmarshal(part["text"], &partText); err == nil {
-			joined.WriteString(partText)
+			_, _ = joined.WriteString(partText)
 			foundText = true
 		}
 	}
@@ -770,7 +772,7 @@ func normalizeDeepSeekCompactToolOutput(raw json.RawMessage) (json.RawMessage, b
 	var joined strings.Builder
 	for _, partRaw := range parts {
 		if err := json.Unmarshal(partRaw, &text); err == nil {
-			joined.WriteString(text)
+			_, _ = joined.WriteString(text)
 			continue
 		}
 		partType := strings.TrimSpace(gjson.GetBytes(partRaw, "type").String())
@@ -781,10 +783,10 @@ func normalizeDeepSeekCompactToolOutput(raw json.RawMessage) (json.RawMessage, b
 		if partText.Type != gjson.String {
 			return raw, false
 		}
-		joined.WriteString(partText.String())
+		_, _ = joined.WriteString(partText.String())
 	}
 	if joined.Len() == 0 {
-		joined.WriteString("(no output)")
+		_, _ = joined.WriteString("(no output)")
 	}
 	encoded, _ := json.Marshal(joined.String())
 	return encoded, true

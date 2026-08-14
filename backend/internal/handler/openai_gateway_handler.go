@@ -282,9 +282,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 		return
 	}
-	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
-	isDeepSeekRequest := requestPlatform == service.PlatformDeepSeek
-
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
@@ -344,8 +341,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")
 		return
 	}
-	requestPlatform = openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
-	isDeepSeekRequest = requestPlatform == service.PlatformDeepSeek
+	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
+	isDeepSeekRequest := requestPlatform == service.PlatformDeepSeek
 	deepSeekCompactMode := classifyDeepSeekCompactionRequest(c, body, requestPlatform)
 	// Restore gateway-owned checkpoints before policy inspection so moderation
 	// evaluates the model-visible text instead of opaque encrypted_content.
