@@ -119,7 +119,7 @@ func TestOpenAIChatCompletionsDeepSeekPartialStreamRecordsObservedUsage(t *testi
 	h, usageRepo, apiKey := newDeepSeekPartialUsageHandler(t, upstreamBody)
 	c, recorder := deepSeekPartialUsageContext(
 		"/v1/chat/completions",
-		`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}],"stream":true}`,
+		`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"max","stream":true}`,
 		apiKey,
 	)
 
@@ -130,6 +130,8 @@ func TestOpenAIChatCompletionsDeepSeekPartialStreamRecordsObservedUsage(t *testi
 		require.Equal(t, 3, log.InputTokens)
 		require.Equal(t, 1, log.OutputTokens)
 		require.True(t, log.Stream)
+		require.NotNil(t, log.ReasoningEffort)
+		require.Equal(t, "max", *log.ReasoningEffort)
 	default:
 		t.Fatal("expected partial DeepSeek Chat usage to be recorded")
 	}
@@ -144,7 +146,7 @@ func TestOpenAIResponsesDeepSeekPartialStreamRecordsObservedUsage(t *testing.T) 
 	h, usageRepo, apiKey := newDeepSeekPartialUsageHandler(t, upstreamBody)
 	c, recorder := deepSeekPartialUsageContext(
 		"/v1/responses",
-		`{"model":"deepseek-v4-pro","input":"hello","stream":true}`,
+		`{"model":"deepseek-v4-pro","input":"hello","reasoning":{"effort":"max"},"stream":true}`,
 		apiKey,
 	)
 
@@ -155,6 +157,8 @@ func TestOpenAIResponsesDeepSeekPartialStreamRecordsObservedUsage(t *testing.T) 
 		require.Equal(t, 5, log.InputTokens)
 		require.Equal(t, 2, log.OutputTokens)
 		require.True(t, log.Stream)
+		require.NotNil(t, log.ReasoningEffort)
+		require.Equal(t, "max", *log.ReasoningEffort)
 	default:
 		t.Fatal("expected partial DeepSeek Responses usage to be recorded")
 	}

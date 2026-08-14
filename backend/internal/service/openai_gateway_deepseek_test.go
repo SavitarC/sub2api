@@ -68,7 +68,7 @@ func TestNormalizeOpenAICompatiblePlatformPreservesDeepSeek(t *testing.T) {
 
 func TestForwardAsChatCompletionsDeepSeekUsesNativeRawEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"service_tier":"fast","stream":false}`)
+	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"max","service_tier":"fast","stream":false}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
@@ -89,12 +89,15 @@ func TestForwardAsChatCompletionsDeepSeekUsesNativeRawEndpoint(t *testing.T) {
 	require.Equal(t, "http://deepseek.example/chat/completions", upstream.lastReq.URL.String())
 	require.Equal(t, "Bearer sk-deepseek-test", upstream.lastReq.Header.Get("Authorization"))
 	require.JSONEq(t, string(body), string(upstream.lastBody), "DeepSeek raw Chat body must bypass OpenAI fast/Responses transforms")
+	require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
+	require.NotNil(t, result.ReasoningEffort)
+	require.Equal(t, "max", *result.ReasoningEffort)
 	require.Equal(t, deepSeekChatCompletionsEndpoint, result.UpstreamEndpoint)
 }
 
 func TestForwardDeepSeekResponsesUsesNativeEndpointAndOpaqueBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"deepseek-v4-pro","input":"hello","service_tier":"fast","previous_response_id":"resp_previous","stream":false}`)
+	body := []byte(`{"model":"deepseek-v4-pro","input":"hello","reasoning":{"effort":"max"},"service_tier":"fast","previous_response_id":"resp_previous","stream":false}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
@@ -115,6 +118,9 @@ func TestForwardDeepSeekResponsesUsesNativeEndpointAndOpaqueBody(t *testing.T) {
 	require.Equal(t, "http://deepseek.example/responses", upstream.lastReq.URL.String())
 	require.Equal(t, "Bearer sk-deepseek-test", upstream.lastReq.Header.Get("Authorization"))
 	require.JSONEq(t, string(body), string(upstream.lastBody), "DeepSeek Responses body must bypass Codex, fast, image, and CC bridge transforms")
+	require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+	require.NotNil(t, result.ReasoningEffort)
+	require.Equal(t, "max", *result.ReasoningEffort)
 	require.Equal(t, "ds_req_1", result.RequestID)
 	require.Equal(t, 5, result.Usage.InputTokens)
 	require.Equal(t, 2, result.Usage.OutputTokens)
@@ -123,7 +129,7 @@ func TestForwardDeepSeekResponsesUsesNativeEndpointAndOpaqueBody(t *testing.T) {
 
 func TestForwardAsChatCompletionsDeepSeekStreamCompletesWithDoneAndUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"max","stream":true}`)
 	upstreamSSE := strings.Join([]string{
 		`data: {"id":"chatcmpl_ds","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`,
 		``,
@@ -152,6 +158,8 @@ func TestForwardAsChatCompletionsDeepSeekStreamCompletesWithDoneAndUsage(t *test
 	require.Equal(t, 3, result.Usage.InputTokens)
 	require.Equal(t, 2, result.Usage.CacheReadInputTokens)
 	require.Equal(t, 1, result.Usage.OutputTokens)
+	require.NotNil(t, result.ReasoningEffort)
+	require.Equal(t, "max", *result.ReasoningEffort)
 	require.Equal(t, "ds-chat-stream-ok", result.RequestID)
 	require.Contains(t, recorder.Body.String(), `data: [DONE]`)
 	require.Contains(t, recorder.Body.String(), `"usage":{"prompt_tokens":3`)

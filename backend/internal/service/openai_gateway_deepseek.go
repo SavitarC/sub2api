@@ -398,7 +398,7 @@ func (s *OpenAIGatewayService) forwardDeepSeekResponses(
 		return s.handleErrorResponse(ctx, resp, c, account, upstreamBody, billingModel)
 	}
 
-	reasoningEffort := extractOpenAIReasoningEffortFromBody(upstreamBody, upstreamModel, billingModel, originalModel)
+	reasoningEffort := extractOpenAIReasoningEffortFromBodyForAccount(account, upstreamBody, upstreamModel, billingModel, originalModel)
 	serviceTier := extractOpenAIServiceTierFromBody(upstreamBody)
 	var relayResult *deepSeekResponsesRelayResult
 	if clientStream {
