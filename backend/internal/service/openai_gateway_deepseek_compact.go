@@ -24,6 +24,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -38,6 +39,7 @@ const (
 	deepSeekCompactMaxSSEBytes         = 8 * 1024 * 1024
 	deepSeekCompactMaxSSELineBytes     = 1024 * 1024
 	deepSeekCompactSummaryMaxTokens    = 8192
+	deepSeekCompactReasoningEffort     = "max"
 	deepSeekCompactEnvelopeVersion     = 1
 	deepSeekResponsesMaxJSONDepth      = 256
 	deepSeekCompactInvalidStateMessage = "invalid DeepSeek compact encrypted_content"
@@ -967,13 +969,17 @@ func deepSeekCompactChatRequest(body []byte, upstreamModel string) ([]byte, int,
 	chatRequest.TopP = nil
 	chatRequest.ParallelToolCalls = nil
 	chatRequest.ToolChoice = nil
-	chatRequest.ReasoningEffort = ""
+	chatRequest.ReasoningEffort = deepSeekCompactReasoningEffort
 	chatRequest.ServiceTier = ""
 	chatRequest.Stop = nil
 	chatRequest.ResponseFormat = nil
 	encoded, err := marshalOpenAIUpstreamJSON(chatRequest)
 	if err != nil {
 		return nil, 0, fmt.Errorf("encode DeepSeek compact chat request: %w", err)
+	}
+	encoded, err = sjson.SetBytes(encoded, "thinking.type", "enabled")
+	if err != nil {
+		return nil, 0, fmt.Errorf("enable DeepSeek compact thinking: %w", err)
 	}
 	return encoded, compactedBytes, nil
 }
@@ -1300,6 +1306,7 @@ func (s *OpenAIGatewayService) forwardDeepSeekRemoteCompactionV2(
 		UpstreamResponseModel:         observedUpstreamResponseModel(c),
 		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
 		UpstreamEndpoint:              deepSeekChatCompletionsEndpoint,
+		ReasoningEffort:               optionalTrimmedStringPtr(deepSeekCompactReasoningEffort),
 		UpstreamTerminalEvent:         terminalEvent,
 		Stream:                        clientStream,
 		Duration:                      time.Since(startTime),

@@ -24,6 +24,7 @@ type deepSeekPartialUsageHTTPUpstream struct {
 	body     string
 	calls    int
 	lastPath string
+	lastBody []byte
 }
 
 type deepSeekCompactBlockingAuditEngine struct {
@@ -56,6 +57,9 @@ func (u *deepSeekPartialUsageHTTPUpstream) Do(req *http.Request, _ string, _ int
 	u.calls++
 	if req != nil && req.URL != nil {
 		u.lastPath = req.URL.Path
+	}
+	if req != nil && req.Body != nil {
+		u.lastBody, _ = io.ReadAll(req.Body)
 	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
@@ -233,11 +237,15 @@ func TestOpenAIResponsesDeepSeekRemoteCompactionUsesHarnessChatAndRecordsUsageOn
 		require.Equal(t, 31, log.InputTokens)
 		require.Equal(t, 7, log.OutputTokens)
 		require.True(t, log.Stream)
+		require.NotNil(t, log.ReasoningEffort)
+		require.Equal(t, "max", *log.ReasoningEffort)
 	default:
 		t.Fatal("expected DeepSeek compact usage to be recorded")
 	}
 	require.Equal(t, 1, upstream.calls)
 	require.Equal(t, "/chat/completions", upstream.lastPath)
+	require.Equal(t, "enabled", gjson.GetBytes(upstream.lastBody, "thinking.type").String())
+	require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
 	require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
 	// The same sole item appears once in output_item.done and once inside the
 	// completed response object; there must be no second semantic item.
@@ -301,11 +309,15 @@ func TestOpenAIResponsesDeepSeekLegacyCodexCompactionWires(t *testing.T) {
 				require.Equal(t, 31, log.InputTokens)
 				require.Equal(t, 7, log.OutputTokens)
 				require.Equal(t, tt.wantStream, log.Stream)
+				require.NotNil(t, log.ReasoningEffort)
+				require.Equal(t, "max", *log.ReasoningEffort)
 			default:
 				t.Fatal("expected legacy DeepSeek compact usage to be recorded")
 			}
 			require.Equal(t, 1, upstream.calls)
 			require.Equal(t, "/chat/completions", upstream.lastPath)
+			require.Equal(t, "enabled", gjson.GetBytes(upstream.lastBody, "thinking.type").String())
+			require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
 			if tt.wantStream {
 				require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
 				require.Equal(t, 1, strings.Count(recorder.Body.String(), "event: response.output_item.done"))
@@ -338,6 +350,8 @@ func TestOpenAIResponsesDeepSeekRemoteCompactionInvalidSummaryBillsOnceWithoutRe
 	case log := <-usageRepo.created:
 		require.Equal(t, 11, log.InputTokens)
 		require.Equal(t, 2, log.OutputTokens)
+		require.NotNil(t, log.ReasoningEffort)
+		require.Equal(t, "max", *log.ReasoningEffort)
 	default:
 		t.Fatal("expected rejected DeepSeek compact summary usage to be recorded")
 	}
@@ -365,6 +379,8 @@ func TestOpenAIResponsesDeepSeekRemoteCompactionUpstreamErrorBillsOnceAndFailsSt
 	case log := <-usageRepo.created:
 		require.Equal(t, 13, log.InputTokens)
 		require.Equal(t, 2, log.OutputTokens)
+		require.NotNil(t, log.ReasoningEffort)
+		require.Equal(t, "max", *log.ReasoningEffort)
 	default:
 		t.Fatal("expected failed DeepSeek compact usage to be recorded")
 	}
