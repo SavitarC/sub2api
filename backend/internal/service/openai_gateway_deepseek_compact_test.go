@@ -82,6 +82,95 @@ func TestForwardDeepSeekResponsesRemoteCompactionV2UsesHarnessChatWireAndReturns
 	require.Equal(t, int64(38), gjson.Get(events[1][1], "response.usage.total_tokens").Int())
 }
 
+func TestForwardDeepSeekResponsesLegacyCompactReturnsUnaryJSON(t *testing.T) {
+	body := mustMarshalDeepSeekCompactTestJSON(t, map[string]any{
+		"model":            "deepseek-v4-flash",
+		"stream":           true,
+		"store":            true,
+		"prompt_cache_key": "legacy-compact-session",
+		"instructions":     "You are Codex.",
+		"input": []any{map[string]any{
+			"type": "message", "role": "user",
+			"content": strings.Repeat("Preserve this legacy Codex context. ", 100),
+		}},
+	})
+	upstream := &httpUpstreamRecorder{resp: deepSeekRemoteCompactChatResponse(
+		deepSeekRemoteCompactTestSummary,
+		"private reasoning must not become the checkpoint",
+		"stop",
+	)}
+	svc := newDeepSeekRemoteCompactTestService(upstream)
+	c, recorder := newDeepSeekResponsesTestContext(t, body)
+	c.Request.URL.Path = "/v1/responses/compact"
+
+	normalized, err := svc.NormalizeDeepSeekLegacyCompactRequest(c, body)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(normalized, "stream").Exists())
+	require.False(t, gjson.GetBytes(normalized, "store").Exists())
+	require.False(t, gjson.GetBytes(normalized, "prompt_cache_key").Exists())
+	legacyInput := gjson.GetBytes(normalized, "input").Array()
+	require.NotEmpty(t, legacyInput)
+	require.Equal(t, "compaction_trigger", legacyInput[len(legacyInput)-1].Get("type").String())
+	MarkDeepSeekCompaction(c, DeepSeekCompactionModeLegacyUnary)
+
+	result, err := svc.Forward(deepSeekCompactTestContext(42), c, deepSeekForwardTestAccount(), normalized)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.Stream)
+	require.Equal(t, deepSeekChatCompletionsEndpoint, result.UpstreamEndpoint)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
+	require.Equal(t, "response", gjson.GetBytes(recorder.Body.Bytes(), "object").String())
+	require.Equal(t, "completed", gjson.GetBytes(recorder.Body.Bytes(), "status").String())
+	require.Len(t, gjson.GetBytes(recorder.Body.Bytes(), "output").Array(), 1)
+	require.Equal(t, "compaction", gjson.GetBytes(recorder.Body.Bytes(), "output.0.type").String())
+	require.NotEmpty(t, gjson.GetBytes(recorder.Body.Bytes(), "output.0.encrypted_content").String())
+	require.NotContains(t, recorder.Body.String(), "event: response.completed")
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "/chat/completions", upstream.lastReq.URL.Path)
+}
+
+func TestNormalizeDeepSeekLegacyCompactRequestRejectsInvalidTriggers(t *testing.T) {
+	svc := newDeepSeekRemoteCompactTestService(&httpUpstreamRecorder{})
+	for _, input := range [][]any{
+		{
+			map[string]any{"type": "compaction_trigger"},
+			map[string]any{"type": "message", "role": "user", "content": "after trigger"},
+		},
+		{
+			map[string]any{"type": "message", "role": "user", "content": "context"},
+			map[string]any{"type": "compaction_trigger"},
+			map[string]any{"type": "compaction_trigger"},
+		},
+	} {
+		body := mustMarshalDeepSeekCompactTestJSON(t, map[string]any{
+			"model": "deepseek-v4-flash",
+			"input": input,
+		})
+		c, _ := newDeepSeekResponsesTestContext(t, body)
+		_, err := svc.NormalizeDeepSeekLegacyCompactRequest(c, body)
+		require.Error(t, err)
+	}
+}
+
+func TestNormalizeDeepSeekLegacyCompactRequestConvertsStringInput(t *testing.T) {
+	svc := newDeepSeekRemoteCompactTestService(&httpUpstreamRecorder{})
+	body := mustMarshalDeepSeekCompactTestJSON(t, map[string]any{
+		"model": "deepseek-v4-flash",
+		"input": "legacy string history",
+	})
+	c, _ := newDeepSeekResponsesTestContext(t, body)
+
+	normalized, err := svc.NormalizeDeepSeekLegacyCompactRequest(c, body)
+	require.NoError(t, err)
+	items := gjson.GetBytes(normalized, "input").Array()
+	require.Len(t, items, 2)
+	require.Equal(t, "message", items[0].Get("type").String())
+	require.Equal(t, "user", items[0].Get("role").String())
+	require.Equal(t, "legacy string history", items[0].Get("content.0.text").String())
+	require.Equal(t, "compaction_trigger", items[1].Get("type").String())
+}
+
 func TestDeepSeekCompactChatRequestMatchesHarnessHistorySemantics(t *testing.T) {
 	body := mustMarshalDeepSeekCompactTestJSON(t, map[string]any{
 		"model": "deepseek-v4-flash", "stream": true,

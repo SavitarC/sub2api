@@ -100,6 +100,8 @@ func TestMarkDeepSeekRemoteCompactionV2Request_RequiresDedicatedServerSignals(t 
 		betaHeader string
 		harnessTag string
 		wantMarked bool
+		wantMode   service.DeepSeekCompactionMode
+		wantStream bool
 	}{
 		{
 			name:       "resolved_deepseek",
@@ -108,6 +110,8 @@ func TestMarkDeepSeekRemoteCompactionV2Request_RequiresDedicatedServerSignals(t 
 			body:       remoteBody,
 			betaHeader: "responses_websockets_v2, remote_compaction_v2",
 			wantMarked: true,
+			wantMode:   service.DeepSeekCompactionModeRemoteV2SSE,
+			wantStream: true,
 		},
 		{
 			name:       "openai_platform",
@@ -122,13 +126,16 @@ func TestMarkDeepSeekRemoteCompactionV2Request_RequiresDedicatedServerSignals(t 
 			path:       "/v1/responses",
 			body:       []byte(`{"model":"deepseek-v4-pro","stream":true,"input":[{"type":"message","role":"user","content":"hello"}]}`),
 			betaHeader: "remote_compaction_v2",
+			harnessTag: "1",
 		},
 		{
-			name:       "missing_codex_feature",
+			name:       "legacy_body_stream_without_codex_feature",
 			platform:   service.PlatformDeepSeek,
 			path:       "/v1/responses",
 			body:       remoteBody,
-			harnessTag: "1",
+			wantMarked: true,
+			wantMode:   service.DeepSeekCompactionModeLegacyBodySSE,
+			wantStream: true,
 		},
 		{
 			name:       "non_stream_request",
@@ -136,11 +143,37 @@ func TestMarkDeepSeekRemoteCompactionV2Request_RequiresDedicatedServerSignals(t 
 			path:       "/v1/responses",
 			body:       []byte(`{"model":"deepseek-v4-pro","stream":false,"input":[{"type":"compaction_trigger"}]}`),
 			betaHeader: "remote_compaction_v2",
+			wantMarked: true,
+			wantMode:   service.DeepSeekCompactionModeLegacyUnary,
 		},
 		{
-			name:       "compact_subpath",
+			name:       "missing_stream_request",
+			platform:   service.PlatformDeepSeek,
+			path:       "/responses",
+			body:       []byte(`{"model":"deepseek-v4-pro","input":[{"type":"compaction_trigger"}]}`),
+			wantMarked: true,
+			wantMode:   service.DeepSeekCompactionModeLegacyUnary,
+		},
+		{
+			name:       "standalone_compact_path",
 			platform:   service.PlatformDeepSeek,
 			path:       "/v1/responses/compact",
+			body:       remoteBody,
+			betaHeader: "remote_compaction_v2",
+			wantMarked: true,
+			wantMode:   service.DeepSeekCompactionModeLegacyUnary,
+		},
+		{
+			name:       "nested_responses_suffix",
+			platform:   service.PlatformDeepSeek,
+			path:       "/v1/responses/foo/responses",
+			body:       remoteBody,
+			betaHeader: "remote_compaction_v2",
+		},
+		{
+			name:       "compact_nested_subpath",
+			platform:   service.PlatformDeepSeek,
+			path:       "/responses/compact/detail",
 			body:       remoteBody,
 			betaHeader: "remote_compaction_v2",
 		},
@@ -159,9 +192,10 @@ func TestMarkDeepSeekRemoteCompactionV2Request_RequiresDedicatedServerSignals(t 
 			marked := markDeepSeekRemoteCompactionV2Request(c, zap.NewNop(), tt.body, tt.platform)
 			require.Equal(t, tt.wantMarked, marked)
 			require.Equal(t, tt.wantMarked, service.IsDeepSeekRemoteCompactionV2Marked(c))
+			require.Equal(t, tt.wantMode, service.DeepSeekCompactionModeFromContext(c))
 			value, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
-			require.Equal(t, tt.wantMarked, exists)
-			if tt.wantMarked {
+			require.Equal(t, tt.wantStream, exists)
+			if tt.wantStream {
 				require.Equal(t, true, value)
 			}
 		})

@@ -248,6 +248,79 @@ func TestOpenAIResponsesDeepSeekRemoteCompactionUsesHarnessChatAndRecordsUsageOn
 	require.NotContains(t, recorder.Body.String(), "continue implementation")
 }
 
+func TestOpenAIResponsesDeepSeekLegacyCodexCompactionWires(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamBody := "data: {\"id\":\"chat_compact_legacy\",\"model\":\"deepseek-v4-flash\",\"choices\":[{\"delta\":{\"content\":\"## Primary Request and Intent\\n- continue legacy task\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"id\":\"chat_compact_legacy\",\"choices\":[],\"usage\":{\"prompt_tokens\":31,\"completion_tokens\":7,\"total_tokens\":38}}\n\n" +
+		"data: [DONE]\n\n"
+	longContext := strings.Repeat("important legacy Codex context ", 100)
+	longContextJSON, err := json.Marshal(longContext)
+	require.NoError(t, err)
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		wantStream bool
+	}{
+		{
+			name:       "body_signal_stream_without_beta_header",
+			path:       "/v1/responses",
+			body:       `{"model":"deepseek-v4-flash","stream":true,"input":[{"type":"message","role":"user","content":"` + longContext + `"},{"type":"compaction_trigger"}]}`,
+			wantStream: true,
+		},
+		{
+			name: "body_signal_unary",
+			path: "/responses",
+			body: `{"model":"deepseek-v4-flash","stream":false,"input":[{"type":"message","role":"user","content":"` + longContext + `"},{"type":"compaction_trigger"}]}`,
+		},
+		{
+			name: "standalone_compact_unary_without_trigger",
+			path: "/v1/responses/compact",
+			body: `{"model":"deepseek-v4-flash","stream":true,"store":true,"prompt_cache_key":"legacy",` +
+				`"input":[{"type":"message","role":"user","content":"` + longContext + `"}]}`,
+		},
+		{
+			name: "standalone_compact_unary_string_input",
+			path: "/responses/compact",
+			body: `{"model":"deepseek-v4-flash","input":` + string(longContextJSON) + `}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, usageRepo, apiKey, upstream := newDeepSeekPartialUsageHandler(t, upstreamBody)
+			c, recorder := deepSeekPartialUsageContext(tt.path, tt.body, apiKey)
+			if tt.wantStream {
+				c.Request.Header.Set("Accept", "text/event-stream")
+			}
+
+			h.Responses(c)
+
+			select {
+			case log := <-usageRepo.created:
+				require.Equal(t, 31, log.InputTokens)
+				require.Equal(t, 7, log.OutputTokens)
+				require.Equal(t, tt.wantStream, log.Stream)
+			default:
+				t.Fatal("expected legacy DeepSeek compact usage to be recorded")
+			}
+			require.Equal(t, 1, upstream.calls)
+			require.Equal(t, "/chat/completions", upstream.lastPath)
+			if tt.wantStream {
+				require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
+				require.Equal(t, 1, strings.Count(recorder.Body.String(), "event: response.output_item.done"))
+				require.Equal(t, 1, strings.Count(recorder.Body.String(), "event: response.completed"))
+			} else {
+				require.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
+				require.Equal(t, "response", gjson.GetBytes(recorder.Body.Bytes(), "object").String())
+				require.Len(t, gjson.GetBytes(recorder.Body.Bytes(), "output").Array(), 1)
+				require.Equal(t, "compaction", gjson.GetBytes(recorder.Body.Bytes(), "output.0.type").String())
+				require.NotContains(t, recorder.Body.String(), "event: response.completed")
+			}
+		})
+	}
+}
+
 func TestOpenAIResponsesDeepSeekRemoteCompactionInvalidSummaryBillsOnceWithoutRetry(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstreamBody := "data: {\"id\":\"chat_compact_empty\",\"choices\":[{\"delta\":{\"content\":\"   \"},\"finish_reason\":\"stop\"}]}\n\n" +
@@ -345,6 +418,30 @@ func TestOpenAIResponsesDeepSeekRemoteCompactionAuditsToolOutputBeforeUpstream(t
 	select {
 	case <-usageRepo.created:
 		t.Fatal("blocked compact tool output must not create usage")
+	default:
+	}
+}
+
+func TestOpenAIResponsesDeepSeekLegacyCompactAuditsToolOutputBeforeUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, usageRepo, apiKey, upstream := newDeepSeekPartialUsageHandler(t, "unused")
+	engine := &deepSeekCompactBlockingAuditEngine{}
+	h.securityAuditCoordinator = securityaudit.NewCoordinator(nil, engine)
+	requestBody := `{"model":"deepseek-v4-flash","input":[` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"benign request"}]},` +
+		`{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"call_1","output":"blocked compact tool output"}]}`
+	c, recorder := deepSeekPartialUsageContext("/responses/compact", requestBody, apiKey)
+
+	h.Responses(c)
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Contains(t, recorder.Body.String(), securityaudit.ErrorCodeBlocked)
+	require.Contains(t, engine.scanText, "blocked compact tool output")
+	require.Equal(t, 0, upstream.calls)
+	select {
+	case <-usageRepo.created:
+		t.Fatal("blocked legacy compact tool output must not create usage")
 	default:
 	}
 }

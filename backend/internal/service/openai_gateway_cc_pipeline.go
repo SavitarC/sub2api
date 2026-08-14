@@ -237,7 +237,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 		upstreamReq.Header.Del("X-Api-Key")
 		upstreamReq.Header.Del("X-Goog-Api-Key")
 		upstreamReq.Header.Set("Authorization", "Bearer "+bearerToken)
-		if deepSeekChatRequest && IsDeepSeekRemoteCompactionV2Marked(c) {
+		if deepSeekChatRequest && IsDeepSeekCompactionMarked(c) {
 			upstreamReq.Header.Set("X-DeepSeek-Harness-Compact", "1")
 		}
 	}

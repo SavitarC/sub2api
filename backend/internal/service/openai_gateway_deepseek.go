@@ -373,7 +373,7 @@ func (s *OpenAIGatewayService) forwardDeepSeekResponses(
 	clientStream := gjson.GetBytes(body, "stream").Bool()
 	billingModel := resolveOpenAIForwardModel(account, originalModel, "")
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
-	if IsDeepSeekRemoteCompactionV2Marked(c) && HasCompactionTriggerInInput(body) {
+	if IsDeepSeekCompactionMarked(c) && HasCompactionTriggerInInput(body) {
 		return s.forwardDeepSeekRemoteCompactionV2(ctx, c, account, body, originalModel, billingModel, upstreamModel)
 	}
 	upstreamBody := body

@@ -340,14 +340,29 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 	requestPlatform = openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
 	isDeepSeekRequest = requestPlatform == service.PlatformDeepSeek
-	deepSeekRemoteCompact := markDeepSeekRemoteCompactionV2Request(c, reqLog, body, requestPlatform)
+	deepSeekCompactMode := classifyDeepSeekCompactionRequest(c, body, requestPlatform)
 	// Restore gateway-owned checkpoints before policy inspection so moderation
 	// evaluates the model-visible text instead of opaque encrypted_content.
 	body, ok = h.restoreDeepSeekCompactInputBeforeAudit(c, body, requestPlatform)
 	if !ok {
 		return
 	}
-	if !isDeepSeekRequest {
+	deepSeekCompactBridge := deepSeekCompactMode != service.DeepSeekCompactionModeNone
+	if isDeepSeekRequest && deepSeekCompactBridge {
+		if deepSeekCompactMode == service.DeepSeekCompactionModeLegacyUnary && isExactDeepSeekResponsesCompactPath(c) {
+			body, err = h.gatewayService.NormalizeDeepSeekLegacyCompactRequest(c, body)
+			if err != nil {
+				if errors.Is(err, service.ErrDeepSeekCompactRequestTooLarge) {
+					h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", err.Error())
+					return
+				}
+				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+				return
+			}
+		}
+		service.MarkDeepSeekCompaction(c, deepSeekCompactMode)
+		reqLog.Info("deepseek.compact_bridge.detected", zap.String("compact_mode", string(deepSeekCompactMode)))
+	} else if !isDeepSeekRequest {
 		body, ok = h.normalizeOpenAIResponsesCompactRequest(c, reqLog, body)
 		if !ok {
 			return
@@ -429,7 +444,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	c.Request = c.Request.WithContext(service.WithOpenAIForwardModel(
 		c.Request.Context(),
 		forwardModel,
-		legacyCompact,
+		legacyCompact && !deepSeekCompactBridge,
 	))
 
 	// OpenAI/Codex requires local function_call_output validation. DeepSeek's
@@ -473,7 +488,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if h.rejectIfCyberSessionBlocked(c, apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses) {
 		return
 	}
-	if deepSeekRemoteCompact {
+	if deepSeekCompactBridge {
 		if err := h.gatewayService.PrepareDeepSeekRemoteCompactionRequest(c, forwardBody); err != nil {
 			if errors.Is(err, service.ErrDeepSeekCompactRequestTooLarge) {
 				h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", err.Error())
@@ -483,7 +498,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 	}
-	requireCompact := legacyCompact
+	requireCompact := legacyCompact && !deepSeekCompactBridge
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -509,7 +524,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// token 计费部分仍受利润门保护，独立图片/视频端点才在门外。
 	pricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
 	c.Request = c.Request.WithContext(pricingCtx)
-	if deepSeekRemoteCompact {
+	if deepSeekCompactBridge {
 		stopCompactKeepalive = service.StartOpenAICompactSSEKeepalive(c, h.openAICompactKeepaliveInterval())
 	}
 
@@ -836,24 +851,83 @@ func isBareOpenAIResponsesPath(c *gin.Context) bool {
 	}
 }
 
+func isExactDeepSeekResponsesPath(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	switch strings.TrimSpace(c.Request.URL.Path) {
+	case "/v1/responses", "/responses", "/backend-api/codex/responses":
+		return true
+	default:
+		return false
+	}
+}
+
+func isExactDeepSeekResponsesCompactPath(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	switch strings.TrimSpace(c.Request.URL.Path) {
+	case "/v1/responses/compact", "/responses/compact", "/backend-api/codex/responses/compact":
+		return true
+	default:
+		return false
+	}
+}
+
 func isOpenAIRemoteCompactionV2Request(body []byte) bool {
 	stream, valid := parseOpenAICompatibleStream(body)
 	return valid && stream && service.HasCompactionTriggerInInput(body)
+}
+
+func isDeepSeekRemoteCompactionV2Request(c *gin.Context, body []byte) bool {
+	if !isOpenAIRemoteCompactionV2Request(body) || c == nil || c.Request == nil {
+		return false
+	}
+	for _, header := range c.Request.Header.Values("x-codex-beta-features") {
+		for _, feature := range strings.Split(header, ",") {
+			if strings.TrimSpace(feature) == "remote_compaction_v2" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func classifyDeepSeekCompactionRequest(c *gin.Context, body []byte, requestPlatform string) service.DeepSeekCompactionMode {
+	if requestPlatform != service.PlatformDeepSeek {
+		return service.DeepSeekCompactionModeNone
+	}
+	if isExactDeepSeekResponsesCompactPath(c) {
+		return service.DeepSeekCompactionModeLegacyUnary
+	}
+	if !isExactDeepSeekResponsesPath(c) || !service.HasCompactionTriggerInInput(body) {
+		return service.DeepSeekCompactionModeNone
+	}
+	stream, valid := parseOpenAICompatibleStream(body)
+	if !valid {
+		return service.DeepSeekCompactionModeNone
+	}
+	if !stream {
+		return service.DeepSeekCompactionModeLegacyUnary
+	}
+	if isDeepSeekRemoteCompactionV2Request(c, body) {
+		return service.DeepSeekCompactionModeRemoteV2SSE
+	}
+	return service.DeepSeekCompactionModeLegacyBodySSE
 }
 
 // markDeepSeekRemoteCompactionV2Request marks only the dedicated DeepSeek
 // bridge after the effective platform (including composite routing) has been
 // resolved. Client-provided attribution headers alone never select the bridge.
 func markDeepSeekRemoteCompactionV2Request(c *gin.Context, reqLog *zap.Logger, body []byte, requestPlatform string) bool {
-	if requestPlatform != service.PlatformDeepSeek ||
-		!isBareOpenAIResponsesPath(c) ||
-		!service.HasCompactionTriggerInInput(body) ||
-		!isOpenAIRemoteCompactionV2Request(body) {
+	mode := classifyDeepSeekCompactionRequest(c, body, requestPlatform)
+	if mode == service.DeepSeekCompactionModeNone {
 		return false
 	}
-	service.MarkDeepSeekRemoteCompactionV2(c)
+	service.MarkDeepSeekCompaction(c, mode)
 	if reqLog != nil {
-		reqLog.Info("deepseek.remote_compact_v2.detected")
+		reqLog.Info("deepseek.compact_bridge.detected", zap.String("compact_mode", string(mode)))
 	}
 	return true
 }
@@ -919,7 +993,7 @@ func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Con
 }
 
 func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, startedAt time.Time) {
-	if !isOpenAILegacyCompactPath(c) && !service.IsDeepSeekRemoteCompactionV2Marked(c) {
+	if !isOpenAILegacyCompactPath(c) && !service.IsDeepSeekCompactionMarked(c) {
 		return
 	}
 

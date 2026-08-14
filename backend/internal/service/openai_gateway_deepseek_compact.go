@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	deepSeekRemoteCompactionV2Key = "deepseek_remote_compaction_v2"
+	deepSeekCompactionModeKey     = "deepseek_compaction_bridge_mode"
 	deepSeekCompactPreparedKey    = "deepseek_remote_compaction_prepared"
 	deepSeekResponsesValidatedKey = "deepseek_responses_input_validated"
 
@@ -41,6 +41,15 @@ const (
 	deepSeekCompactEnvelopeVersion     = 1
 	deepSeekResponsesMaxJSONDepth      = 256
 	deepSeekCompactInvalidStateMessage = "invalid DeepSeek compact encrypted_content"
+)
+
+type DeepSeekCompactionMode string
+
+const (
+	DeepSeekCompactionModeNone          DeepSeekCompactionMode = ""
+	DeepSeekCompactionModeRemoteV2SSE   DeepSeekCompactionMode = "remote_v2_sse"
+	DeepSeekCompactionModeLegacyBodySSE DeepSeekCompactionMode = "legacy_body_sse"
+	DeepSeekCompactionModeLegacyUnary   DeepSeekCompactionMode = "legacy_unary"
 )
 
 var (
@@ -110,23 +119,43 @@ type deepSeekCompactPreparedRequest struct {
 	CompactedBytes int
 }
 
-// MarkDeepSeekRemoteCompactionV2 records a server-validated bridge decision.
-// Client-provided DeepSeek attribution headers never set this marker.
-func MarkDeepSeekRemoteCompactionV2(c *gin.Context) {
+// MarkDeepSeekCompaction records a server-validated bridge decision. The mode
+// also preserves the client wire: remote/body streaming clients receive SSE,
+// while legacy /responses/compact clients receive unary Responses JSON.
+func MarkDeepSeekCompaction(c *gin.Context, mode DeepSeekCompactionMode) {
 	if c == nil {
 		return
 	}
-	c.Set(deepSeekRemoteCompactionV2Key, true)
-	MarkOpenAICompactClientStream(c)
+	switch mode {
+	case DeepSeekCompactionModeRemoteV2SSE, DeepSeekCompactionModeLegacyBodySSE:
+		c.Set(deepSeekCompactionModeKey, mode)
+		MarkOpenAICompactClientStream(c)
+	case DeepSeekCompactionModeLegacyUnary:
+		c.Set(deepSeekCompactionModeKey, mode)
+	}
+}
+
+// MarkDeepSeekRemoteCompactionV2 keeps the existing call site contract for the
+// current Codex remote_compaction_v2 streaming wire.
+func MarkDeepSeekRemoteCompactionV2(c *gin.Context) {
+	MarkDeepSeekCompaction(c, DeepSeekCompactionModeRemoteV2SSE)
+}
+
+func DeepSeekCompactionModeFromContext(c *gin.Context) DeepSeekCompactionMode {
+	if c == nil {
+		return DeepSeekCompactionModeNone
+	}
+	value, _ := c.Get(deepSeekCompactionModeKey)
+	mode, _ := value.(DeepSeekCompactionMode)
+	return mode
+}
+
+func IsDeepSeekCompactionMarked(c *gin.Context) bool {
+	return DeepSeekCompactionModeFromContext(c) != DeepSeekCompactionModeNone
 }
 
 func IsDeepSeekRemoteCompactionV2Marked(c *gin.Context) bool {
-	if c == nil {
-		return false
-	}
-	marked, _ := c.Get(deepSeekRemoteCompactionV2Key)
-	value, _ := marked.(bool)
-	return value
+	return IsDeepSeekCompactionMarked(c)
 }
 
 // MarkDeepSeekResponsesInputValidated avoids repeating the strict input scan
@@ -491,6 +520,87 @@ func (s *OpenAIGatewayService) RestoreDeepSeekCompactInput(ctx context.Context, 
 		return nil, false, ErrDeepSeekCompactInvalidEncryptedContent
 	}
 	return restoredBody, true, nil
+}
+
+// NormalizeDeepSeekLegacyCompactRequest converts the standalone
+// /responses/compact request shape into the internal body-signal shape used by
+// the harness-backed bridge. Callers must restore gateway-owned checkpoints
+// first so policy inspection and this normalization operate on plaintext.
+func (s *OpenAIGatewayService) NormalizeDeepSeekLegacyCompactRequest(c *gin.Context, body []byte) ([]byte, error) {
+	if s.deepSeekCompactRequestTooLarge(body) {
+		return nil, ErrDeepSeekCompactRequestTooLarge
+	}
+	if !IsDeepSeekResponsesInputValidated(c) {
+		if _, err := scanDeepSeekResponsesJSON(body); err != nil {
+			return nil, err
+		}
+	}
+
+	normalized, _, err := normalizeOpenAICompactRequestBody(body)
+	if err != nil {
+		return nil, fmt.Errorf("normalize DeepSeek legacy compact request: %w", err)
+	}
+	var request map[string]json.RawMessage
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		return nil, fmt.Errorf("parse DeepSeek legacy compact request: %w", err)
+	}
+	inputRaw, ok := request["input"]
+	if !ok {
+		return nil, errors.New("DeepSeek legacy compact request requires input")
+	}
+	var items []json.RawMessage
+	trimmedInput := bytes.TrimSpace(inputRaw)
+	if len(trimmedInput) > 0 && trimmedInput[0] == '"' {
+		var text string
+		if err := json.Unmarshal(trimmedInput, &text); err != nil || strings.TrimSpace(text) == "" {
+			return nil, errors.New("DeepSeek legacy compact input string must not be empty")
+		}
+		message, err := marshalOpenAIUpstreamJSON(map[string]any{
+			"type": "message",
+			"role": "user",
+			"content": []any{map[string]any{
+				"type": "input_text",
+				"text": text,
+			}},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("encode DeepSeek legacy compact string input: %w", err)
+		}
+		items = []json.RawMessage{message}
+	} else if err := json.Unmarshal(inputRaw, &items); err != nil {
+		return nil, errors.New("DeepSeek legacy compact input must be a string or array")
+	}
+
+	triggerIndex := -1
+	for i, raw := range items {
+		if strings.TrimSpace(gjson.GetBytes(raw, "type").String()) != "compaction_trigger" {
+			continue
+		}
+		if triggerIndex >= 0 {
+			return nil, errors.New("DeepSeek remote compaction requires exactly one compaction_trigger")
+		}
+		triggerIndex = i
+	}
+	if triggerIndex >= 0 && triggerIndex != len(items)-1 {
+		return nil, errors.New("DeepSeek remote compaction requires a final compaction_trigger")
+	}
+	if triggerIndex < 0 {
+		trigger, _ := marshalOpenAIUpstreamJSON(map[string]any{"type": "compaction_trigger"})
+		items = append(items, trigger)
+	}
+	encodedInput, err := marshalOpenAIUpstreamJSON(items)
+	if err != nil {
+		return nil, fmt.Errorf("encode DeepSeek legacy compact input: %w", err)
+	}
+	request["input"] = encodedInput
+	encoded, err := marshalOpenAIUpstreamJSON(request)
+	if err != nil {
+		return nil, fmt.Errorf("encode DeepSeek legacy compact request: %w", err)
+	}
+	if s.deepSeekCompactRequestTooLarge(encoded) {
+		return nil, ErrDeepSeekCompactRequestTooLarge
+	}
+	return encoded, nil
 }
 
 // PrepareDeepSeekRemoteCompactionRequest performs account-independent
@@ -1174,6 +1284,7 @@ func (s *OpenAIGatewayService) forwardDeepSeekRemoteCompactionV2(
 	}
 
 	streamResult, streamErr := s.readDeepSeekCompactChatStream(c, resp, account, startTime)
+	clientStream := openAICompactClientWantsStream(c)
 	requestID := openAICompatibleUpstreamRequestID(resp.Header)
 	terminalEvent := ""
 	if streamResult.Completed && !streamResult.UpstreamFailed {
@@ -1190,7 +1301,7 @@ func (s *OpenAIGatewayService) forwardDeepSeekRemoteCompactionV2(
 		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
 		UpstreamEndpoint:              deepSeekChatCompletionsEndpoint,
 		UpstreamTerminalEvent:         terminalEvent,
-		Stream:                        true,
+		Stream:                        clientStream,
 		Duration:                      time.Since(startTime),
 		FirstTokenMs:                  streamResult.FirstTokenMs,
 		ResponseHeaders:               resp.Header.Clone(),
@@ -1221,9 +1332,14 @@ func (s *OpenAIGatewayService) forwardDeepSeekRemoteCompactionV2(
 	}
 	result.ResponseID = responseID
 	s.bindHTTPResponseAccount(ctx, c, account, responseID)
-	s.writeDeepSeekResponsesHeaders(c, resp, true)
-	if !writeOpenAICompactSSEBridge(c, http.StatusOK, finalJSON) {
-		return result, errors.New("failed to synthesize DeepSeek remote compaction response")
+	s.writeDeepSeekResponsesHeaders(c, resp, clientStream)
+	if clientStream {
+		if !writeOpenAICompactSSEBridge(c, http.StatusOK, finalJSON) {
+			return result, errors.New("failed to synthesize DeepSeek remote compaction response")
+		}
+	} else {
+		c.Header("Content-Type", "application/json")
+		c.Data(http.StatusOK, "application/json", finalJSON)
 	}
 	return result, nil
 }
