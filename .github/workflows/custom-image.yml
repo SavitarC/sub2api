@@ -12,7 +12,7 @@ permissions:
 
 env:
   # 固定高于官方版本号，避免应用内“在线更新”覆盖自定义二进制。
-  CUSTOM_VERSION: 0.1.999-custom
+  CUSTOM_VERSION: 0.1.999
 
 jobs:
   build-and-push:
