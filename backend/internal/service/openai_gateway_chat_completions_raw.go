@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -293,6 +294,10 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	var streamProtocolErr error
 	pendingLines := make([]string, 0, 8)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
+	var sensitiveGuard *deepSeekSSESensitiveEventGuard
+	if account.IsDeepSeekAPIKey() {
+		sensitiveGuard = newDeepSeekSSESensitiveEventGuard(account, deepSeekSSESensitiveProtocolChat)
+	}
 
 	writeLine := func(line string) {
 		if clientDisconnected {
@@ -328,9 +333,17 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			)
 		}
 	}
+	emitGuardedWire := func(wire []byte) error {
+		line := bytes.TrimSuffix(wire, []byte{'\n'})
+		writeLine(string(line))
+		return nil
+	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	streamInterval := time.Duration(0)
+	if account.IsDeepSeek() && s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
+	}
+	scanErr := scanDeepSeekSSELinesWithIdleTimeout(scanner, resp.Body, streamInterval, func(line string) bool {
 		eventBoundary := line == "" || line == "\r"
 		refusalDetector.ObserveSSELine(line)
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
@@ -340,7 +353,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			} else {
 				if account.IsDeepSeek() && trimmedPayload != "" && !gjson.Valid(trimmedPayload) {
 					streamProtocolErr = errors.New("DeepSeek Chat stream returned malformed JSON data")
-					break
+					return false
 				}
 				safePayloadString := payload
 				safePayload := []byte(payload)
@@ -360,23 +373,48 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			}
 		}
 
-		writeLine(line)
+		if sensitiveGuard != nil {
+			if guardErr := sensitiveGuard.PushWireLine(append([]byte(line), '\n'), emitGuardedWire); guardErr != nil {
+				streamProtocolErr = guardErr
+				return false
+			}
+		} else {
+			writeLine(line)
+		}
 		if eventBoundary {
 			if !clientDisconnected && clientOutputStarted {
 				c.Writer.Flush()
 			}
 			if account.IsDeepSeek() && pendingDone {
 				sawDone = true
-				break
+				return false
 			}
-			continue
+			return true
 		}
 		if !clientDisconnected && clientOutputStarted {
 			c.Writer.Flush()
 		}
+		return true
+	})
+	if errors.Is(scanErr, errDeepSeekSSEDataIntervalTimeout) {
+		logger.L().Warn("openai chat_completions raw: data interval timeout",
+			zap.String("request_id", requestID),
+			zap.String("model", originalModel),
+			zap.Duration("interval", streamInterval),
+		)
+		streamProtocolErr = fmt.Errorf("DeepSeek Chat stream data interval timeout: %w", scanErr)
+		scanErr = nil
+	}
+	// Finish is only safe after a clean scanner stop. On timeout, read failure,
+	// or protocol abort, current may contain an SSE event without its blank-line
+	// boundary; emitting it would commit a partial response and suppress the
+	// pre-commit failover path.
+	if sensitiveGuard != nil && scanErr == nil && streamProtocolErr == nil {
+		if guardErr := sensitiveGuard.Finish(emitGuardedWire); guardErr != nil && streamProtocolErr == nil {
+			streamProtocolErr = guardErr
+		}
 	}
 
-	scanErr := scanner.Err()
 	if scanErr != nil {
 		if !errors.Is(scanErr, context.Canceled) && !errors.Is(scanErr, context.DeadlineExceeded) {
 			logger.L().Warn("openai chat_completions raw: stream read error",
@@ -423,6 +461,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	}
 	if account.IsDeepSeek() {
 		if streamProtocolErr != nil {
+			if errors.Is(streamProtocolErr, errDeepSeekSSESensitiveData) {
+				return result, streamProtocolErr
+			}
 			if !clientOutputStarted {
 				return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, nil, streamProtocolErr.Error(), resp.Header)
 			}
