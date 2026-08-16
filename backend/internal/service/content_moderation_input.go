@@ -132,7 +132,32 @@ func collectLastResponsesInput(input gjson.Result, parts *[]string, images *[]st
 		if len(array) == 0 {
 			return
 		}
-		last := array[len(array)-1]
+		lastIndex := len(array) - 1
+		if array[lastIndex].Get("type").String() == "compaction_trigger" {
+			var toolParts []string
+			var toolImages []string
+			for _, item := range array[:lastIndex] {
+				if isResponsesToolOutputType(item.Get("type").String()) {
+					collectResponsesToolOutput(item.Get("output"), &toolParts, &toolImages)
+				}
+			}
+			for lastIndex--; lastIndex >= 0; lastIndex-- {
+				if isResponsesUserTextItem(array[lastIndex]) {
+					break
+				}
+			}
+			if lastIndex >= 0 {
+				last := array[lastIndex]
+				collectContentValue(last.Get("content"), parts, images)
+				if last.Get("type").String() == "input_text" || last.Get("text").Exists() {
+					collectContentValue(last, parts, images)
+				}
+			}
+			*parts = append(*parts, toolParts...)
+			*images = append(*images, toolImages...)
+			return
+		}
+		last := array[lastIndex]
 		if !isResponsesUserTextItem(last) {
 			return
 		}
@@ -148,6 +173,81 @@ func collectLastResponsesInput(input gjson.Result, parts *[]string, images *[]st
 			}
 		}
 	}
+}
+
+func isResponsesToolOutputType(itemType string) bool {
+	switch strings.ToLower(strings.TrimSpace(itemType)) {
+	case "function_call_output", "custom_tool_call_output", "tool_search_output":
+		return true
+	default:
+		return false
+	}
+}
+
+func collectResponsesToolOutput(output gjson.Result, parts *[]string, images *[]string) {
+	partsBefore := len(*parts)
+	imagesBefore := len(*images)
+	seen := make(map[string]struct{})
+	collectResponsesToolOutputValue(output, parts, images, seen)
+	if len(*parts) != partsBefore || len(*images) != imagesBefore || !output.Exists() {
+		return
+	}
+	if raw := strings.TrimSpace(output.Raw); raw != "" && raw != "null" {
+		addModerationText(parts, raw)
+	}
+}
+
+// collectResponsesToolOutputValue walks every textual leaf in an arbitrary
+// structured tool result. Unlike message content, tool output has no fixed
+// schema: recognized text/content fields do not make sibling fields safe to
+// ignore because the complete object is forwarded back to the model.
+func collectResponsesToolOutputValue(value gjson.Result, parts *[]string, images *[]string, seen map[string]struct{}) {
+	switch {
+	case !value.Exists():
+		return
+	case value.Type == gjson.String:
+		text := strings.TrimSpace(value.String())
+		if text == "" || isToolOutputMediaDataURI(text) {
+			return
+		}
+		if _, duplicate := seen[text]; duplicate {
+			return
+		}
+		partsBefore := len(*parts)
+		addModerationText(parts, text)
+		if len(*parts) != partsBefore {
+			seen[text] = struct{}{}
+		}
+	case value.IsArray():
+		value.ForEach(func(_, item gjson.Result) bool {
+			collectResponsesToolOutputValue(item, parts, images, seen)
+			return true
+		})
+	case value.IsObject():
+		collectContentObjectImages(value, images)
+		value.ForEach(func(key, child gjson.Result) bool {
+			if key.String() == "type" && isToolOutputContentDiscriminator(child.String()) {
+				return true
+			}
+			collectResponsesToolOutputValue(child, parts, images, seen)
+			return true
+		})
+	}
+}
+
+func isToolOutputContentDiscriminator(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "text", "input_text", "output_text", "message", "image_url", "input_image", "image":
+		return true
+	default:
+		return false
+	}
+}
+
+func isToolOutputMediaDataURI(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	return strings.HasPrefix(lower, "data:image/") || strings.HasPrefix(lower, "data:video/")
 }
 
 func isResponsesUserTextItem(item gjson.Result) bool {
@@ -213,17 +313,7 @@ func collectContentValue(value gjson.Result, parts *[]string, images *[]string) 
 		})
 	case value.IsObject():
 		typ := strings.ToLower(strings.TrimSpace(value.Get("type").String()))
-		addModerationImage(images, value.Get("image_url.url").String())
-		addModerationImage(images, value.Get("image_url").String())
-		addModerationImage(images, value.Get("url").String())
-		addModerationImageData(images, value.Get("source.media_type").String(), value.Get("source.data").String())
-		addModerationImageData(images, value.Get("source.mediaType").String(), value.Get("source.data").String())
-		addModerationImageData(images, value.Get("media_type").String(), value.Get("data").String())
-		addModerationImageData(images, value.Get("mime_type").String(), value.Get("data").String())
-		addModerationImageData(images, value.Get("mimeType").String(), value.Get("data").String())
-		addModerationImage(images, value.Get("source.data").String())
-		addModerationImage(images, value.Get("data").String())
-		addModerationImage(images, value.Get("base64").String())
+		collectContentObjectImages(value, images)
 		switch typ {
 		case "", "text", "input_text", "message":
 			if value.Get("text").Exists() {
@@ -235,6 +325,20 @@ func collectContentValue(value gjson.Result, parts *[]string, images *[]string) 
 		case "image_url", "input_image", "image":
 		}
 	}
+}
+
+func collectContentObjectImages(value gjson.Result, images *[]string) {
+	addModerationImage(images, value.Get("image_url.url").String())
+	addModerationImage(images, value.Get("image_url").String())
+	addModerationImage(images, value.Get("url").String())
+	addModerationImageData(images, value.Get("source.media_type").String(), value.Get("source.data").String())
+	addModerationImageData(images, value.Get("source.mediaType").String(), value.Get("source.data").String())
+	addModerationImageData(images, value.Get("media_type").String(), value.Get("data").String())
+	addModerationImageData(images, value.Get("mime_type").String(), value.Get("data").String())
+	addModerationImageData(images, value.Get("mimeType").String(), value.Get("data").String())
+	addModerationImage(images, value.Get("source.data").String())
+	addModerationImage(images, value.Get("data").String())
+	addModerationImage(images, value.Get("base64").String())
 }
 
 func addGeminiModerationImage(images *[]string, part gjson.Result) {

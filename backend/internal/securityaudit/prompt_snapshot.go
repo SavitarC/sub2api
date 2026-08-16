@@ -193,23 +193,42 @@ func extractResponses(value any) []promptSegment {
 		return []promptSegment{{text: typed, user: true, role: "user"}}
 	case []any:
 		result := make([]promptSegment, 0, len(typed))
+		compactRequest := responsesEndsWithCompactionTrigger(typed)
+		var latestUserTexts []string
+		var compactToolOutputs []string
 		for _, item := range typed {
 			switch entry := item.(type) {
 			case string:
 				result = append(result, promptSegment{text: entry, user: true, role: "user"})
 			case map[string]any:
+				itemType := strings.ToLower(stringValue(entry["type"]))
+				if compactRequest && isResponsesToolOutputType(itemType) {
+					compactToolOutputs = append(compactToolOutputs, responsesToolOutputTexts(entry["output"])...)
+					continue
+				}
 				role := strings.ToLower(stringValue(entry["role"]))
 				if role != "" && !isClientInstructionRole(role) {
 					continue
 				}
 				if content, exists := entry["content"]; exists {
-					for _, text := range contentTexts(content) {
+					texts := contentTexts(content)
+					for _, text := range texts {
 						result = append(result, promptSegment{text: text, user: role == "" || role == "user", role: role})
+					}
+					if role == "" || role == "user" {
+						latestUserTexts = append(latestUserTexts[:0], texts...)
 					}
 				} else if text := stringValue(entry["text"]); text != "" {
 					result = append(result, promptSegment{text: text, user: role == "" || role == "user", role: role})
+					if role == "" || role == "user" {
+						latestUserTexts = append(latestUserTexts[:0], text)
+					}
 				}
 			}
+		}
+		if compactRequest && len(compactToolOutputs) > 0 {
+			combined := append(append([]string(nil), latestUserTexts...), compactToolOutputs...)
+			result = append(result, promptSegment{text: strings.Join(combined, "\n\n"), user: true, role: "user"})
 		}
 		return result
 	case map[string]any:
@@ -220,6 +239,101 @@ func extractResponses(value any) []promptSegment {
 		return promptSegmentsForRole(contentTexts(typed["content"]), role)
 	default:
 		return nil
+	}
+}
+
+func responsesEndsWithCompactionTrigger(items []any) bool {
+	if len(items) == 0 {
+		return false
+	}
+	last, ok := items[len(items)-1].(map[string]any)
+	return ok && stringValue(last["type"]) == "compaction_trigger"
+}
+
+func isResponsesToolOutputType(itemType string) bool {
+	switch strings.ToLower(strings.TrimSpace(itemType)) {
+	case "function_call_output", "custom_tool_call_output", "tool_search_output":
+		return true
+	default:
+		return false
+	}
+}
+
+func responsesToolOutputTexts(value any) []string {
+	if text, ok := value.(string); ok {
+		return []string{text}
+	}
+	texts := structuredToolOutputTextLeaves(value)
+	if len(texts) > 0 {
+		return texts
+	}
+	switch value.(type) {
+	case nil:
+		return nil
+	default:
+		encoded, err := json.Marshal(value)
+		if err != nil || string(encoded) == "null" {
+			return nil
+		}
+		return []string{string(encoded)}
+	}
+}
+
+// structuredToolOutputTextLeaves walks the complete provider-owned output
+// instead of stopping after a familiar text/content field. Tool results are
+// otherwise arbitrary JSON, so a sibling or nested field remains model-visible
+// and must participate in the prompt audit too.
+func structuredToolOutputTextLeaves(value any) []string {
+	result := make([]string, 0, 4)
+	seen := make(map[string]struct{})
+	var walk func(any)
+	walk = func(current any) {
+		switch typed := current.(type) {
+		case string:
+			text := strings.TrimSpace(typed)
+			if text == "" || isToolOutputMediaDataURI(text) {
+				return
+			}
+			if _, duplicate := seen[text]; duplicate {
+				return
+			}
+			seen[text] = struct{}{}
+			result = append(result, text)
+		case []any:
+			for _, item := range typed {
+				walk(item)
+			}
+		case map[string]any:
+			keys := make([]string, 0, len(typed))
+			for key := range typed {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				child := typed[key]
+				if key == "type" && isToolOutputContentDiscriminator(stringValue(child)) {
+					continue
+				}
+				walk(child)
+			}
+		}
+	}
+	walk(value)
+	return result
+}
+
+func isToolOutputMediaDataURI(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	return strings.HasPrefix(lower, "data:image/") || strings.HasPrefix(lower, "data:video/")
+}
+
+func isToolOutputContentDiscriminator(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "text", "input_text", "output_text", "message", "image_url", "input_image", "image":
+		return true
+	default:
+		return false
 	}
 }
 

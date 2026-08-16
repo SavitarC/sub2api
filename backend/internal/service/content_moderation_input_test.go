@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -162,6 +163,55 @@ func TestExtractContentModerationInput_ResponsesLastUserMessageExtracted(t *test
 	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIResponses, body)
 
 	require.Equal(t, "latest", input.Text)
+}
+
+func TestExtractContentModerationInput_ResponsesCompactionTriggerUsesLatestUserText(t *testing.T) {
+	body := []byte(`{
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"review this compact content"}]},
+			{"type":"function_call_output","call_id":"call_1","output":"tool output"},
+			{"type":"compaction_trigger"}
+		]
+	}`)
+	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIResponses, body)
+	require.Equal(t, "review this compact content tool output", input.Text)
+}
+
+func TestExtractContentModerationInput_ResponsesCompactionIncludesStructuredToolOutput(t *testing.T) {
+	body := []byte(`{
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"benign request"}]},
+			{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","output":{"result":"blocked tool payload"}},
+			{"type":"compaction_trigger"}
+		]
+	}`)
+	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIResponses, body)
+	require.Contains(t, input.Text, "benign request")
+	require.Contains(t, input.Text, "blocked tool payload")
+}
+
+func TestExtractContentModerationInput_ResponsesStructuredToolOutputScansEveryTextLeaf(t *testing.T) {
+	longAlphanumeric := strings.Repeat("bomb", 100)
+	body := []byte(strings.Replace(`{
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"benign request"}]},
+			{"type":"function_call_output","call_id":"call_1","output":{
+				"text":"benign result",
+				"result":"blocked sibling result",
+				"long":"__LONG_ALPHANUMERIC__",
+				"nested":[{"content":{"detail":"deep blocked result","url":"https://example.test/blocked-query"}},"array result","array result"]
+			}}
+		]
+	}`, "__LONG_ALPHANUMERIC__", longAlphanumeric, 1))
+
+	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIResponses, body)
+
+	for _, expected := range []string{"benign result", "blocked sibling result", "deep blocked result", "array result", "https://example.test/blocked-query"} {
+		require.Contains(t, input.Text, expected)
+	}
+	require.Contains(t, input.Text, longAlphanumeric)
+	require.Equal(t, 1, strings.Count(input.Text, "array result"))
 }
 
 func TestExtractContentModerationInput_ResponsesLastIsAssistantSkipped(t *testing.T) {

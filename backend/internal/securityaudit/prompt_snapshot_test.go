@@ -171,6 +171,46 @@ func TestPromptSnapshotResponsesShapes(t *testing.T) {
 	}
 }
 
+func TestPromptSnapshotResponsesCompactionIncludesToolOutputsInBlockingScope(t *testing.T) {
+	body := []byte(`{"input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"benign request"}]},
+		{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_1","output":"blocked tool payload"},
+		{"type":"compaction_trigger"}
+	]}`)
+	req := Request{Protocol: "openai_responses", Body: body}
+	full, err := ExtractPromptSnapshot(req)
+	require.NoError(t, err)
+	require.Contains(t, full.ScanText, "benign request")
+	require.Contains(t, full.ScanText, "blocked tool payload")
+
+	blocking, err := ExtractBlockingPromptSnapshot(req, true)
+	require.NoError(t, err)
+	require.Contains(t, blocking.ScanText, "benign request")
+	require.Contains(t, blocking.ScanText, "blocked tool payload")
+}
+
+func TestPromptSnapshotResponsesStructuredToolOutputScansEveryTextLeaf(t *testing.T) {
+	longAlphanumeric := strings.Repeat("bomb", 100)
+	body := []byte(strings.Replace(`{"input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"benign request"}]},
+		{"type":"function_call_output","call_id":"call_1","output":{
+			"text":"benign result",
+			"result":"blocked sibling result",
+			"long":"__LONG_ALPHANUMERIC__",
+			"nested":[{"content":{"detail":"deep blocked result","url":"https://example.test/blocked-query"}},"array result","array result"]
+		}}
+	]}`, "__LONG_ALPHANUMERIC__", longAlphanumeric, 1))
+
+	snapshot, err := ExtractPromptSnapshot(Request{Protocol: "openai_responses", Body: body})
+
+	require.NoError(t, err)
+	for _, expected := range []string{"benign result", "blocked sibling result", "deep blocked result", "array result", "https://example.test/blocked-query"} {
+		require.Contains(t, snapshot.ScanText, expected)
+	}
+	require.Contains(t, snapshot.ScanText, longAlphanumeric)
+	require.Equal(t, 1, strings.Count(snapshot.ScanText, "array result"))
+}
 func TestPromptSnapshotGeminiBatchShapesAndMediaExclusion(t *testing.T) {
 	body := []byte(`{
 		"contents":{"role":"user","parts":[{"text":"root content"},{"inlineData":{"data":"ROOT_BASE64"}}]},

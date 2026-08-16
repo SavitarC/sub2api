@@ -155,6 +155,16 @@ func (s *OpenAIGatewayService) handleDeepSeekResponsesJSON(
 	if parsed, ok := extractOpenAIUsageFromJSONBytes(body); ok {
 		*usage = parsed
 	}
+	if hit, code, message := detectOpenAICyberPolicy(body); hit {
+		MarkOpsCyberPolicy(c, CyberPolicyMark{
+			Code:           code,
+			Message:        message,
+			Body:           truncateString(string(body), 4096),
+			UpstreamStatus: http.StatusOK,
+			UpstreamInTok:  usage.InputTokens,
+			UpstreamOutTok: usage.OutputTokens,
+		})
+	}
 	terminalEvent := deepSeekResponsesTerminalFromJSON(body)
 	if terminalEvent == "" {
 		return nil, s.newOpenAIStreamFailoverError(
@@ -358,6 +368,13 @@ func (s *OpenAIGatewayService) forwardDeepSeekResponses(
 	if !gjson.ValidBytes(body) {
 		return nil, fmt.Errorf("parse DeepSeek Responses request: invalid JSON")
 	}
+	if !IsDeepSeekResponsesInputValidated(c) {
+		restoredBody, _, err := s.RestoreDeepSeekCompactInput(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		body = restoredBody
+	}
 
 	originalModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	if originalModel == "" {
@@ -366,6 +383,9 @@ func (s *OpenAIGatewayService) forwardDeepSeekResponses(
 	clientStream := gjson.GetBytes(body, "stream").Bool()
 	billingModel := resolveOpenAIForwardModel(account, originalModel, "")
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if IsDeepSeekCompactionMarked(c) && HasCompactionTriggerInInput(body) {
+		return s.forwardDeepSeekRemoteCompactionV2(ctx, c, account, body, originalModel, billingModel, upstreamModel)
+	}
 	upstreamBody := body
 	if upstreamModel != originalModel {
 		upstreamBody = ReplaceModelInBody(body, upstreamModel)
