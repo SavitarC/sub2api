@@ -89,7 +89,8 @@ func normalizeCompositeRouteEndpoint(endpoint string) string {
 		return CompositeRouteEndpointAny
 	}
 	switch endpoint {
-	case CompositeRouteEndpointMessages,
+	case CompositeRouteEndpointAny,
+		CompositeRouteEndpointMessages,
 		CompositeRouteEndpointCountTokens,
 		CompositeRouteEndpointResponses,
 		CompositeRouteEndpointChatCompletions,
@@ -98,8 +99,70 @@ func normalizeCompositeRouteEndpoint(endpoint string) string {
 		CompositeRouteEndpointGemini:
 		return endpoint
 	default:
-		return CompositeRouteEndpointAny
+		// Preserve unknown values so validation can reject a typo instead of
+		// silently turning it into an unrestricted `any` route.
+		return endpoint
 	}
+}
+
+func isKnownCompositeRouteEndpoint(endpoint string) bool {
+	switch normalizeCompositeRouteEndpoint(endpoint) {
+	case CompositeRouteEndpointAny,
+		CompositeRouteEndpointMessages,
+		CompositeRouteEndpointCountTokens,
+		CompositeRouteEndpointResponses,
+		CompositeRouteEndpointChatCompletions,
+		CompositeRouteEndpointEmbeddings,
+		CompositeRouteEndpointImages,
+		CompositeRouteEndpointGemini:
+		return true
+	default:
+		return false
+	}
+}
+
+var compositeRouteEndpointCapabilities = map[string]map[string]struct{}{
+	PlatformDeepSeek: {
+		CompositeRouteEndpointAny:             {},
+		CompositeRouteEndpointMessages:        {},
+		CompositeRouteEndpointResponses:       {},
+		CompositeRouteEndpointChatCompletions: {},
+	},
+}
+
+// CompositeRouteEndpointSupported reports whether a route target may serve an
+// endpoint query. `any` is valid here because admin preview and resolver callers
+// use it to ask whether a stored wildcard route matches.
+func CompositeRouteEndpointSupported(platform, endpoint string) bool {
+	endpoint = normalizeCompositeRouteEndpoint(endpoint)
+	if !isKnownCompositeRouteEndpoint(endpoint) {
+		return false
+	}
+	capabilities, constrained := compositeRouteEndpointCapabilities[platform]
+	if !constrained {
+		return true
+	}
+	_, supported := capabilities[endpoint]
+	return supported
+}
+
+// CompositeRouteRequestEndpointSupported applies the stricter HTTP dispatch
+// semantics. For constrained providers, `any` means an unclassified API path,
+// not one of the concrete protocols covered by a stored wildcard route.
+func CompositeRouteRequestEndpointSupported(platform, endpoint string) bool {
+	endpoint = normalizeCompositeRouteEndpoint(endpoint)
+	if platform == PlatformDeepSeek && endpoint == CompositeRouteEndpointAny {
+		return false
+	}
+	return CompositeRouteEndpointSupported(platform, endpoint)
+}
+
+func compositeRouteEndpointAllowed(platform, endpoint string) bool {
+	endpoint = normalizeCompositeRouteEndpoint(endpoint)
+	if endpoint == CompositeRouteEndpointAny {
+		return true
+	}
+	return CompositeRouteEndpointSupported(platform, endpoint)
 }
 
 func normalizeCompositeRouteMatchType(matchType string) string {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
@@ -374,6 +375,58 @@ func TestAdminService_CreateGroup_PreservesNonGrokImageGenerationDisabled(t *tes
 	require.NotNil(t, repo.created)
 	require.False(t, repo.created.AllowImageGeneration)
 	require.False(t, group.AllowImageGeneration)
+}
+
+func TestAdminService_DeepSeekGroupClearsOAuthOnlyRequirement(t *testing.T) {
+	t.Run("create", func(t *testing.T) {
+		repo := &groupRepoStubForAdmin{}
+		group, err := (&adminServiceImpl{groupRepo: repo}).CreateGroup(context.Background(), &CreateGroupInput{
+			Name:             "deepseek",
+			Platform:         PlatformDeepSeek,
+			RateMultiplier:   1,
+			RequireOAuthOnly: true,
+		})
+		require.NoError(t, err)
+		require.False(t, group.RequireOAuthOnly)
+		require.False(t, repo.created.RequireOAuthOnly)
+	})
+
+	t.Run("update and platform transition", func(t *testing.T) {
+		requireOAuthOnly := true
+		for _, existing := range []*Group{
+			{ID: 1, Name: "deepseek", Platform: PlatformDeepSeek, Status: StatusActive, RateMultiplier: 1},
+			{ID: 2, Name: "openai", Platform: PlatformOpenAI, Status: StatusActive, RateMultiplier: 1, RequireOAuthOnly: true},
+		} {
+			repo := &groupRepoStubForAdmin{getByID: existing}
+			input := &UpdateGroupInput{RequireOAuthOnly: &requireOAuthOnly}
+			if existing.Platform == PlatformOpenAI {
+				input.Platform = PlatformDeepSeek
+			}
+			group, err := (&adminServiceImpl{groupRepo: repo}).UpdateGroup(context.Background(), existing.ID, input)
+			require.NoError(t, err)
+			require.Equal(t, PlatformDeepSeek, group.Platform)
+			require.False(t, group.RequireOAuthOnly)
+			require.False(t, repo.updated.RequireOAuthOnly)
+		}
+	})
+}
+
+func TestAdminService_GroupPlatformCanonicalizationAndValidation(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	group, err := (&adminServiceImpl{groupRepo: repo}).CreateGroup(context.Background(), &CreateGroupInput{
+		Name:           "deepseek",
+		Platform:       "  DeepSeek  ",
+		RateMultiplier: 1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, PlatformDeepSeek, group.Platform)
+
+	_, err = (&adminServiceImpl{groupRepo: &groupRepoStubForAdmin{}}).CreateGroup(context.Background(), &CreateGroupInput{
+		Name:           "unknown",
+		Platform:       "unknown-provider",
+		RateMultiplier: 1,
+	})
+	require.Equal(t, "GROUP_PLATFORM_INVALID", infraerrors.Reason(err))
 }
 
 func TestAdminService_CreateGroup_DisablesBatchImageWhenImageGenerationDisabled(t *testing.T) {
@@ -1597,6 +1650,117 @@ func TestAdminService_CreateCompositeRoute_NormalizesAndPersists(t *testing.T) {
 	require.Equal(t, route, routeRepo.created)
 }
 
+func TestAdminService_CompositeRouteDeepSeekEndpointCapabilities(t *testing.T) {
+	allowed := []string{
+		CompositeRouteEndpointAny,
+		CompositeRouteEndpointMessages,
+		CompositeRouteEndpointChatCompletions,
+		CompositeRouteEndpointResponses,
+	}
+	for _, endpoint := range allowed {
+		t.Run("allows "+endpoint, func(t *testing.T) {
+			routeRepo := &compositeRouteRepoStubForAdmin{}
+			svc := &adminServiceImpl{
+				groupRepo:          &groupRepoStubForAdmin{getByID: &Group{ID: 7, Platform: PlatformComposite}},
+				compositeRouteRepo: routeRepo,
+			}
+			route, err := svc.CreateCompositeRoute(context.Background(), 7, CompositeRouteInput{
+				PublicModel:    "deepseek/" + endpoint,
+				TargetPlatform: PlatformDeepSeek,
+				Endpoint:       endpoint,
+				Enabled:        true,
+			})
+			require.NoError(t, err)
+			require.Equal(t, endpoint, route.Endpoint)
+			require.Equal(t, route, routeRepo.created)
+		})
+	}
+
+	rejected := []string{
+		CompositeRouteEndpointCountTokens,
+		CompositeRouteEndpointEmbeddings,
+		CompositeRouteEndpointImages,
+		CompositeRouteEndpointGemini,
+		"respnses",
+	}
+	for _, endpoint := range rejected {
+		t.Run("rejects "+endpoint, func(t *testing.T) {
+			routeRepo := &compositeRouteRepoStubForAdmin{}
+			svc := &adminServiceImpl{
+				groupRepo:          &groupRepoStubForAdmin{getByID: &Group{ID: 7, Platform: PlatformComposite}},
+				compositeRouteRepo: routeRepo,
+			}
+			route, err := svc.CreateCompositeRoute(context.Background(), 7, CompositeRouteInput{
+				PublicModel:    "deepseek/" + endpoint,
+				TargetPlatform: PlatformDeepSeek,
+				Endpoint:       endpoint,
+				Enabled:        true,
+			})
+			require.Nil(t, route)
+			require.Equal(t, "COMPOSITE_ROUTE_ENDPOINT_UNSUPPORTED", infraerrors.Reason(err))
+			require.Nil(t, routeRepo.created)
+		})
+	}
+}
+
+func TestAdminService_CreateCompositeRoute_BlankEndpointDefaultsToAnyButTypoIsRejected(t *testing.T) {
+	newService := func() (*adminServiceImpl, *compositeRouteRepoStubForAdmin) {
+		routeRepo := &compositeRouteRepoStubForAdmin{}
+		return &adminServiceImpl{
+			groupRepo:          &groupRepoStubForAdmin{getByID: &Group{ID: 7, Platform: PlatformComposite}},
+			compositeRouteRepo: routeRepo,
+		}, routeRepo
+	}
+
+	svc, routeRepo := newService()
+	route, err := svc.CreateCompositeRoute(context.Background(), 7, CompositeRouteInput{
+		PublicModel:    "deepseek/default",
+		TargetPlatform: PlatformDeepSeek,
+		Endpoint:       "   ",
+		Enabled:        true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, CompositeRouteEndpointAny, route.Endpoint)
+	require.Equal(t, route, routeRepo.created)
+
+	svc, routeRepo = newService()
+	route, err = svc.CreateCompositeRoute(context.Background(), 7, CompositeRouteInput{
+		PublicModel:    "openai/typo",
+		TargetPlatform: PlatformOpenAI,
+		Endpoint:       " respnses ",
+		Enabled:        true,
+	})
+	require.Nil(t, route)
+	require.Equal(t, "COMPOSITE_ROUTE_ENDPOINT_UNSUPPORTED", infraerrors.Reason(err))
+	require.Nil(t, routeRepo.created)
+}
+
+func TestAdminService_UpdateCompositeRouteRejectsUnsupportedDeepSeekEndpoint(t *testing.T) {
+	routeRepo := &compositeRouteRepoStubForAdmin{routes: []CompositeModelRoute{{
+		ID:             11,
+		GroupID:        7,
+		PublicModel:    "deepseek/model",
+		TargetPlatform: PlatformDeepSeek,
+		Endpoint:       CompositeRouteEndpointResponses,
+		Enabled:        true,
+	}}}
+	svc := &adminServiceImpl{
+		groupRepo:          &groupRepoStubForAdmin{getByID: &Group{ID: 7, Platform: PlatformComposite}},
+		compositeRouteRepo: routeRepo,
+	}
+
+	route, err := svc.UpdateCompositeRoute(context.Background(), 7, 11, CompositeRouteInput{
+		PublicModel:    "deepseek/model",
+		TargetPlatform: PlatformDeepSeek,
+		Endpoint:       CompositeRouteEndpointImages,
+		Enabled:        true,
+	})
+
+	require.Nil(t, route)
+	require.Equal(t, "COMPOSITE_ROUTE_ENDPOINT_UNSUPPORTED", infraerrors.Reason(err))
+	require.Nil(t, routeRepo.updated)
+}
+
 // TestAdminService_CreateCompositeRoute_ExactEmptyUpstreamBackfillsPublicModel 锁定
 // 保守行为：exact 路由留空 upstream_model 仍回填 public_model（持久化/展示契约不变）。
 func TestAdminService_CreateCompositeRoute_ExactEmptyUpstreamBackfillsPublicModel(t *testing.T) {
@@ -1687,6 +1851,38 @@ func TestAdminService_PreviewCompositeRouteUsesExplicitRoutes(t *testing.T) {
 	require.Equal(t, CompositeRouteSourceExplicit, decision.Source)
 	require.Equal(t, PlatformAnthropic, decision.TargetPlatform)
 	require.Equal(t, "claude-sonnet-4-6", decision.UpstreamModel)
+	require.NotNil(t, decision.Route)
+	require.Equal(t, int64(11), decision.Route.ID)
+}
+
+func TestAdminService_PreviewDeepSeekAnyRouteWithDefaultEndpoint(t *testing.T) {
+	groupRepo := &groupRepoStubForAdmin{
+		getByID: &Group{ID: 7, Platform: PlatformComposite},
+	}
+	routeRepo := &compositeRouteRepoStubForAdmin{
+		routes: []CompositeModelRoute{{
+			ID:             11,
+			GroupID:        7,
+			PublicModel:    "company-model",
+			MatchType:      CompositeRouteMatchExact,
+			TargetPlatform: PlatformDeepSeek,
+			UpstreamModel:  "deepseek-v4-pro",
+			Endpoint:       CompositeRouteEndpointAny,
+			Priority:       100,
+			Enabled:        true,
+		}},
+	}
+	svc := &adminServiceImpl{groupRepo: groupRepo, compositeRouteRepo: routeRepo}
+
+	decision, err := svc.PreviewCompositeRoute(context.Background(), 7, CompositeRoutePreviewRequest{
+		Model: "company-model",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.True(t, decision.Matched)
+	require.Equal(t, CompositeRouteEndpointAny, decision.Endpoint)
+	require.Equal(t, PlatformDeepSeek, decision.TargetPlatform)
 	require.NotNil(t, decision.Route)
 	require.Equal(t, int64(11), decision.Route.ID)
 }

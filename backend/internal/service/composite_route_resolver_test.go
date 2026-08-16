@@ -69,6 +69,211 @@ func TestCompositeRouteResolverExplicitExactRouteRewritesModel(t *testing.T) {
 	require.Equal(t, int64(10), decision.Route.ID)
 }
 
+func TestCompositeRouteResolverDeepSeekAnyCoversSupportedProtocols(t *testing.T) {
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []CompositeModelRoute{
+			{
+				ID:             10,
+				GroupID:        7,
+				PublicModel:    "deepseek-alias",
+				MatchType:      CompositeRouteMatchExact,
+				TargetPlatform: PlatformDeepSeek,
+				UpstreamModel:  "deepseek-v4-pro",
+				Endpoint:       CompositeRouteEndpointAny,
+				Priority:       100,
+				Enabled:        true,
+			},
+		},
+	})
+
+	for _, endpoint := range []string{
+		CompositeRouteEndpointMessages,
+		CompositeRouteEndpointResponses,
+		CompositeRouteEndpointChatCompletions,
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			decision, err := resolver.Resolve(context.Background(), 7, "deepseek-alias", endpoint)
+
+			require.NoError(t, err)
+			require.True(t, decision.Matched)
+			require.Equal(t, CompositeRouteSourceExplicit, decision.Source)
+			require.Equal(t, PlatformDeepSeek, decision.TargetPlatform)
+			require.Equal(t, "deepseek-v4-pro", decision.UpstreamModel)
+			require.Equal(t, endpoint, decision.Endpoint)
+			require.NotNil(t, decision.Route)
+			require.Equal(t, CompositeRouteEndpointAny, decision.Route.Endpoint)
+		})
+	}
+}
+
+func TestCompositeRouteEndpointSupportedDeepSeekAnyDoesNotBroadenRequestSurfaces(t *testing.T) {
+	require.True(t, compositeRouteEndpointAllowed(PlatformDeepSeek, CompositeRouteEndpointAny))
+	require.True(t, CompositeRouteEndpointSupported(PlatformDeepSeek, CompositeRouteEndpointAny))
+	require.False(t, CompositeRouteRequestEndpointSupported(PlatformDeepSeek, CompositeRouteEndpointAny))
+	for _, endpoint := range []string{
+		CompositeRouteEndpointMessages,
+		CompositeRouteEndpointResponses,
+		CompositeRouteEndpointChatCompletions,
+	} {
+		require.True(t, CompositeRouteEndpointSupported(PlatformDeepSeek, endpoint), "endpoint=%s", endpoint)
+	}
+	for _, endpoint := range []string{
+		CompositeRouteEndpointCountTokens,
+		CompositeRouteEndpointEmbeddings,
+		CompositeRouteEndpointImages,
+		CompositeRouteEndpointGemini,
+		"respnses",
+	} {
+		require.False(t, CompositeRouteEndpointSupported(PlatformDeepSeek, endpoint), "endpoint=%s", endpoint)
+	}
+}
+
+func TestCompositeRouteResolverDeepSeekAnyMatchesWildcardPreviewEndpoint(t *testing.T) {
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []CompositeModelRoute{{
+			ID:             1,
+			GroupID:        7,
+			PublicModel:    "company-model",
+			MatchType:      CompositeRouteMatchExact,
+			TargetPlatform: PlatformDeepSeek,
+			UpstreamModel:  "deepseek-v4-pro",
+			Endpoint:       CompositeRouteEndpointAny,
+			Enabled:        true,
+		}},
+	})
+
+	decision, err := resolver.Resolve(context.Background(), 7, "company-model", CompositeRouteEndpointAny)
+
+	require.NoError(t, err)
+	require.True(t, decision.Matched)
+	require.Equal(t, CompositeRouteSourceExplicit, decision.Source)
+	require.Equal(t, PlatformDeepSeek, decision.TargetPlatform)
+	require.Equal(t, CompositeRouteEndpointAny, decision.Endpoint)
+	require.NotNil(t, decision.Route)
+	require.Equal(t, int64(1), decision.Route.ID)
+}
+
+func TestCompositeRouteResolverPrefersCapableRouteOverDeepSeekAny(t *testing.T) {
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []CompositeModelRoute{
+			{
+				ID:             1,
+				GroupID:        7,
+				PublicModel:    "shared-model",
+				MatchType:      CompositeRouteMatchExact,
+				TargetPlatform: PlatformDeepSeek,
+				UpstreamModel:  "deepseek-v4-pro",
+				Endpoint:       CompositeRouteEndpointAny,
+				Priority:       1,
+				Enabled:        true,
+			},
+			{
+				ID:             2,
+				GroupID:        7,
+				PublicModel:    "shared-",
+				MatchType:      CompositeRouteMatchPrefix,
+				TargetPlatform: PlatformOpenAI,
+				UpstreamModel:  "gpt-5",
+				Endpoint:       CompositeRouteEndpointCountTokens,
+				Priority:       100,
+				Enabled:        true,
+			},
+		},
+	})
+
+	decision, err := resolver.Resolve(context.Background(), 7, "shared-model", CompositeRouteEndpointCountTokens)
+
+	require.NoError(t, err)
+	require.True(t, decision.Matched)
+	require.Equal(t, PlatformOpenAI, decision.TargetPlatform)
+	require.Equal(t, "gpt-5", decision.UpstreamModel)
+	require.NotNil(t, decision.Route)
+	require.Equal(t, int64(2), decision.Route.ID)
+}
+
+func TestCompositeRouteResolverDeepSeekAnyReportsUnsupportedEndpointWithoutMatching(t *testing.T) {
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []CompositeModelRoute{{
+			ID:             1,
+			GroupID:        7,
+			PublicModel:    "company-model",
+			MatchType:      CompositeRouteMatchExact,
+			TargetPlatform: PlatformDeepSeek,
+			UpstreamModel:  "deepseek-v4-pro",
+			Endpoint:       CompositeRouteEndpointAny,
+			Enabled:        true,
+		}},
+	})
+
+	decision, err := resolver.Resolve(context.Background(), 7, "company-model", CompositeRouteEndpointImages)
+
+	require.NoError(t, err)
+	require.False(t, decision.Matched)
+	require.Equal(t, CompositeRouteSourceExplicit, decision.Source)
+	require.Equal(t, PlatformDeepSeek, decision.TargetPlatform)
+	require.NotNil(t, decision.Route)
+	require.Equal(t, int64(1), decision.Route.ID)
+	require.Equal(t, "endpoint is not supported by target platform", decision.Reason)
+}
+
+func TestCompositeRouteResolverUnsupportedExplicitRouteOverridesDetector(t *testing.T) {
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []CompositeModelRoute{{
+			ID:             1,
+			GroupID:        7,
+			PublicModel:    "gpt-5",
+			MatchType:      CompositeRouteMatchExact,
+			TargetPlatform: PlatformDeepSeek,
+			UpstreamModel:  "deepseek-v4-pro",
+			Endpoint:       CompositeRouteEndpointAny,
+			Enabled:        true,
+		}},
+	})
+
+	decision, err := resolver.Resolve(context.Background(), 7, "gpt-5", CompositeRouteEndpointImages)
+
+	require.NoError(t, err)
+	require.False(t, decision.Matched)
+	require.Equal(t, CompositeRouteSourceExplicit, decision.Source)
+	require.Equal(t, PlatformDeepSeek, decision.TargetPlatform)
+	require.NotNil(t, decision.Route)
+	require.Equal(t, int64(1), decision.Route.ID)
+	require.Equal(t, "endpoint is not supported by target platform", decision.Reason)
+}
+
+func TestCompositeRouteResolverDetectedDeepSeekRejectsUnsupportedEndpoint(t *testing.T) {
+	resolver := NewCompositeRouteResolver(nil)
+
+	decision, err := resolver.Resolve(context.Background(), 7, "deepseek-v4-pro", CompositeRouteEndpointGemini)
+
+	require.NoError(t, err)
+	require.False(t, decision.Matched)
+	require.Equal(t, CompositeRouteSourceDetector, decision.Source)
+	require.Equal(t, PlatformDeepSeek, decision.TargetPlatform)
+	require.Equal(t, "endpoint is not supported by detected platform", decision.Reason)
+}
+
+func TestCompositeRouteResolverInvalidEndpointDoesNotMatchAny(t *testing.T) {
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []CompositeModelRoute{{
+			ID:             1,
+			GroupID:        7,
+			PublicModel:    "shared-model",
+			MatchType:      CompositeRouteMatchExact,
+			TargetPlatform: PlatformOpenAI,
+			Endpoint:       CompositeRouteEndpointAny,
+			Enabled:        true,
+		}},
+	})
+
+	decision, err := resolver.Resolve(context.Background(), 7, "shared-model", "respnses")
+
+	require.NoError(t, err)
+	require.False(t, decision.Matched)
+	require.Equal(t, "respnses", decision.Endpoint)
+	require.Equal(t, "unsupported endpoint", decision.Reason)
+}
+
 func TestCompositeRouteResolverPrefersEndpointSpecificLongestPrefix(t *testing.T) {
 	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
 		routes: []CompositeModelRoute{
