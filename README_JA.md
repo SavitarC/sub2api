@@ -691,18 +691,38 @@ Sub2API は DeepSeek を独立した API Key 専用プラットフォームと�
 | `/v1/responses` | `/responses` | Bearer API Key |
 | `/v1/messages` | `/anthropic/v1/messages` | `x-api-key` |
 
-ストリーミング／非ストリーミングのテキスト、推論、ツール呼び出しは元のプロトコルを保持します。
-組み込みモデルは `deepseek-v4-flash` と `deepseek-v4-pro` です。
-画像、Embedding、音声／動画、Realtime/WebSocket、Responses の大半の子パス、
-Messages `count_tokens` は DeepSeek では有効化されません。Codex の圧縮互換性に限り、
-正確な `/responses/compact` エイリアスを DeepSeek Chat Completions へブリッジします。
+ストリーミング／非ストリーミングのテキスト、推論、ツール呼び出しは、元のプロトコルのまま転送されます。組み込みモデルカタログには
+`deepseek-v4-flash` と `deepseek-v4-pro` が含まれます。カスタムリレーのモデル ID は、
+管理者が明示的に追加できます。画像、Embedding、音声／動画、Realtime、Responses の大半の子パス、
+Messages `count_tokens` は DeepSeek では有効化されません。
 
-`base_url` はバージョンパスや完全なエンドポイントではなく、共通 API ルートである必要があります。
-公式の `https://api.deepseek.com/v1` は正規ルートに正規化されます。
-認証情報を含む DeepSeek リクエストは HTTP リダイレクトに追従しません。
-本番環境でカスタムリレーを使用する場合は `security.url_allowlist` を有効にし、
-意図したリレーホストだけを追加して、`allow_private_hosts` と
-`allow_insecure_http` をともに `false` に設定してください。
+Codex のリモート圧縮は、ゲートウェイの checkpoint ブリッジとして実装されています。
+要約処理は、Codex の checkpoint prompt とリクエストで明示された reasoning effort を使用する、
+DeepSeek ネイティブの通常のストリーミング `POST /responses` リクエストとして実行されます。Chat Completions や DeepSeek
+`/responses/compact` を呼び出すことはありません。ゲートウェイは terminal event と billable usage を
+完全に検証してから、暗号化された Codex compaction item を 1 件返します。パスが完全一致する `/responses/compact`、
+remote-v2 SSE、legacy compact wire は、この実装を共用します。
+
+DeepSeek アカウントで選択できるクライアント Responses WebSocket モードは、`off` と
+`http_bridge` のみです。`http_bridge` では、Sub2API が Codex の WebSocket 接続を受け付け、
+各 `response.create` を独立したストリーミング DeepSeek HTTP `POST /responses` リクエストとして
+転送します。DeepSeek 上流へ WebSocket で接続することはありません。このアカウントモードを使用するには、
+グローバルな `gateway.openai_ws` の v2 router/bridge も有効にする必要があります。したがって、生成される
+Codex 設定の `supports_websockets` は Sub2API のクライアント接続能力を表すものであり、DeepSeek 上流の
+ネイティブ WebSocket 対応を表すものではありません。
+
+新規 DeepSeek アカウントでは、認証済みユーザー単位の分離がデフォルトで有効になります。Sub2API は
+認証済みローカルユーザーから安定した匿名の DeepSeek `user`／`user_id` を導出し、信頼できないクライアントの
+識別情報を上書きします。この識別情報は、Chat Completions、Responses、Anthropic Messages、圧縮、
+WebSocket turn で共通して使用されます。互換性のため、アカウントモードを `off` にすることもできます。
+複数レプリカ間および再起動後も `deepseek.user_id_secret` を変更しないでください。ローテーションすると、
+すべての上流識別情報が変わり、DeepSeek KVCache のコールドスタートが発生します。
+
+`base_url` には、バージョン付きパスや完全なエンドポイントではなく、3 つのプロトコルで共用する API ルートを
+指定する必要があります。公式の `https://api.deepseek.com/v1` エイリアスは正規のルートに正規化されます。
+カスタムリレーは、上表の 3 つのパスをすべて公開する必要があります。認証情報を含む DeepSeek リクエストは
+HTTP リダイレクトに追従しません。本番環境でカスタムリレーを使用する場合は `security.url_allowlist` を有効にし、
+意図したリレーホストのみを追加して、`allow_private_hosts` と `allow_insecure_http` をともに `false` に設定してください。
 
 ## Antigravity サポート
 
