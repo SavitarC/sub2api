@@ -306,6 +306,72 @@ func TestForwardDeepSeekResponsesStreamPreservesRawWireAndCompletesWithoutDone(t
 	require.NotContains(t, recorder.Body.String(), "sessions_resume")
 }
 
+func TestForwardDeepSeekResponsesStreamParsesMultilineDataAtEventBoundary(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"deepseek-v4-pro","input":"hello","stream":true}`)
+	upstreamSSE := "event: response.completed\n" +
+		"data: {\"type\":\"response.completed\",\n" +
+		"data: \"response\":{\"id\":\"resp_multiline\",\"model\":\"deepseek-v4-pro\",\n" +
+		"data: \"status\":\"completed\",\"usage\":{\"input_tokens\":8,\"output_tokens\":3}}}\n\n"
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}}
+	svc := &OpenAIGatewayService{cfg: deepSeekForwardTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.Forward(context.Background(), c, deepSeekForwardTestAccount(), body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "response.completed", result.UpstreamTerminalEvent)
+	require.Equal(t, "resp_multiline", result.ResponseID)
+	require.Equal(t, "deepseek-v4-pro", result.UpstreamResponseModel)
+	require.Equal(t, 8, result.Usage.InputTokens)
+	require.Equal(t, 3, result.Usage.OutputTokens)
+	require.Equal(t, upstreamSSE, recorder.Body.String(), "multiline SSE framing must remain byte-for-byte opaque")
+}
+
+func TestForwardDeepSeekResponsesStreamRedactsMetadataBeforeObservationAndBinding(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"deepseek-v4-pro","input":"hello","stream":true}`)
+	account := deepSeekForwardTestAccount()
+	secret := account.GetDeepSeekAPIKey()
+	rawResponseID := "resp-" + secret
+	rawModel := "model-" + secret
+	upstreamSSE := "event: response.completed\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"" + rawResponseID + "\",\"model\":\"" + rawModel + "\",\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}}\n\n"
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}}
+	svc := &OpenAIGatewayService{cfg: deepSeekForwardTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "resp-"+deepSeekCredentialRedaction, result.ResponseID)
+	require.Equal(t, "model-"+deepSeekCredentialRedaction, result.UpstreamResponseModel)
+	require.NotContains(t, result.ResponseID, secret)
+	require.NotContains(t, result.UpstreamResponseModel, secret)
+	require.NotContains(t, observedUpstreamResponseModel(c), secret)
+	require.NotContains(t, recorder.Body.String(), secret)
+
+	store := svc.getOpenAIWSStateStore()
+	boundAccountID, err := store.GetResponseAccount(context.Background(), 0, result.ResponseID)
+	require.NoError(t, err)
+	require.Equal(t, account.ID, boundAccountID)
+	rawAccountID, err := store.GetResponseAccount(context.Background(), 0, rawResponseID)
+	require.NoError(t, err)
+	require.Zero(t, rawAccountID, "the raw credential-bearing response ID must never reach sticky state")
+}
+
 func TestForwardDeepSeekResponsesStreamRejectsBareDone(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"deepseek-v4-flash","input":"hello","stream":true}`)
@@ -322,9 +388,158 @@ func TestForwardDeepSeekResponsesStreamRejectsBareDone(t *testing.T) {
 
 	result, err := svc.Forward(context.Background(), c, deepSeekForwardTestAccount(), body)
 	require.Error(t, err)
-	require.NotNil(t, result, "the already relayed wire still belongs to the failed attempt")
-	require.Empty(t, result.UpstreamTerminalEvent)
+	require.Nil(t, result, "invalid Responses sentinels must fail over before committing client output")
+	require.Empty(t, recorder.Body.String(), "[DONE] must be rejected before it reaches the client")
+}
+
+func TestForwardDeepSeekResponsesStreamRejectsMalformedJSONBeforeWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"deepseek-v4-flash","input":"hello","stream":true}`)
+	upstreamSSE := "event: response.created\ndata: {malformed}\n\n"
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}}
+	svc := &OpenAIGatewayService{cfg: deepSeekForwardTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.Forward(context.Background(), c, deepSeekForwardTestAccount(), body)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Empty(t, recorder.Body.String(), "malformed SSE data must be rejected before forwarding")
+}
+
+func TestForwardDeepSeekResponsesStreamRejectsEmptyDataBeforeWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"deepseek-v4-flash","input":"hello","stream":true}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("event: response.created\ndata:\n\n")),
+	}}
+	svc := &OpenAIGatewayService{cfg: deepSeekForwardTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.Forward(context.Background(), c, deepSeekForwardTestAccount(), body)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Empty(t, recorder.Body.String(), "empty SSE data must be rejected before forwarding")
+}
+
+func TestForwardDeepSeekResponsesStreamRequiresTypedObjectPayloadBeforeWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{name: "array", payload: `[]`},
+		{name: "scalar", payload: `"response.created"`},
+		{name: "object without type", payload: `{"response":{"id":"resp_missing_type"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"model":"deepseek-v4-flash","input":"hello","stream":true}`)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: io.NopCloser(strings.NewReader(
+					"event: response.created\ndata: " + tt.payload + "\n\n",
+				)),
+			}}
+			svc := &OpenAIGatewayService{cfg: deepSeekForwardTestConfig(), httpUpstream: upstream}
+
+			result, err := svc.Forward(context.Background(), c, deepSeekForwardTestAccount(), body)
+			require.Error(t, err)
+			require.Nil(t, result)
+			require.Empty(t, recorder.Body.String(), "invalid Responses payload must be rejected before forwarding")
+		})
+	}
+}
+
+func TestForwardDeepSeekResponsesStreamRejectsMismatchedEventTypeBeforeWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"deepseek-v4-flash","input":"hello","stream":true}`)
+	upstreamSSE := "event: response.created\n" +
+		`data: {"type":"response.completed","response":{"id":"resp_mismatch","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}` + "\n\n"
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}}
+	svc := &OpenAIGatewayService{cfg: deepSeekForwardTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.Forward(context.Background(), c, deepSeekForwardTestAccount(), body)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Empty(t, recorder.Body.String(), "mismatched event metadata must be rejected before forwarding")
+}
+
+func TestForwardDeepSeekResponsesCyberPolicyMarksStreamUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"deepseek-v4-pro","input":"hello","stream":true}`)
+	upstreamSSE := "event: response.failed\n" +
+		`data: {"type":"response.failed","response":{"id":"resp_ds_cyber_sse","status":"failed","error":{"code":"cyber_policy","message":"blocked stream"},"usage":{"input_tokens":11,"output_tokens":3}}}` + "\n\n"
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}}
+	svc := &OpenAIGatewayService{cfg: deepSeekForwardTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.Forward(context.Background(), c, deepSeekForwardTestAccount(), body)
+	require.Error(t, err)
+	require.NotNil(t, result)
+	mark := GetOpsCyberPolicy(c)
+	require.NotNil(t, mark)
+	require.Equal(t, "blocked stream", mark.Message)
+	require.Equal(t, 11, mark.UpstreamInTok)
+	require.Equal(t, 3, mark.UpstreamOutTok)
 	require.Equal(t, upstreamSSE, recorder.Body.String())
+}
+
+func TestForwardDeepSeekResponsesCyberPolicyUsesLaterTerminalUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"deepseek-v4-pro","input":"hello","stream":true}`)
+	upstreamSSE := strings.Join([]string{
+		`event: response.error`,
+		`data: {"type":"response.error","error":{"code":"cyber_policy","message":"blocked before terminal"}}`,
+		``,
+		`event: response.failed`,
+		`data: {"type":"response.failed","response":{"id":"resp_ds_cyber_late_usage","status":"failed","error":{"code":"provider_error","message":"failed"},"usage":{"input_tokens":13,"output_tokens":4}}}`,
+		``,
+	}, "\n") + "\n"
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}}
+	svc := &OpenAIGatewayService{cfg: deepSeekForwardTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.Forward(context.Background(), c, deepSeekForwardTestAccount(), body)
+	require.Error(t, err)
+	require.NotNil(t, result)
+	mark := GetOpsCyberPolicy(c)
+	require.NotNil(t, mark)
+	require.Equal(t, "blocked before terminal", mark.Message)
+	require.Equal(t, 13, mark.UpstreamInTok)
+	require.Equal(t, 4, mark.UpstreamOutTok)
 }
 
 func TestForwardDeepSeekResponsesStreamRejectsTerminalDataBeforeBlankDispatch(t *testing.T) {
@@ -346,6 +561,7 @@ func TestForwardDeepSeekResponsesStreamRejectsTerminalDataBeforeBlankDispatch(t 
 	require.Error(t, err)
 	require.NotNil(t, result)
 	require.Empty(t, result.UpstreamTerminalEvent)
+	require.Equal(t, "resp_half", result.ResponseID)
 	require.Equal(t, 4, result.Usage.InputTokens)
 	require.Equal(t, 2, result.Usage.OutputTokens)
 	require.Equal(t, upstreamSSE, recorder.Body.String())

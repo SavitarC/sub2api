@@ -215,8 +215,8 @@ func (s *OpenAIGatewayService) handleDeepSeekResponsesStream(
 	var firstTokenMs *int
 	responseID := ""
 	terminalEvent := ""
-	pendingTerminalEvent := ""
 	currentEventType := ""
+	currentEventData := make([]string, 0, 1)
 	clientDisconnected := false
 	clientOutputStarted := false
 	pendingLine := make([]byte, 0, 64*1024)
@@ -226,6 +226,15 @@ func (s *OpenAIGatewayService) handleDeepSeekResponsesStream(
 	}
 	requestID := openAICompatibleUpstreamRequestID(resp.Header)
 	sensitiveGuard := newDeepSeekSSESensitiveEventGuard(account, deepSeekSSESensitiveProtocolResponses)
+	var cyberMark *CyberPolicyMark
+	defer func() {
+		if cyberMark == nil {
+			return
+		}
+		cyberMark.UpstreamInTok = usage.InputTokens
+		cyberMark.UpstreamOutTok = usage.OutputTokens
+		MarkOpsCyberPolicy(c, *cyberMark)
+	}()
 
 	result := func() *deepSeekResponsesRelayResult {
 		return &deepSeekResponsesRelayResult{
@@ -236,17 +245,70 @@ func (s *OpenAIGatewayService) handleDeepSeekResponsesStream(
 			clientDisconnect: clientDisconnected,
 		}
 	}
-	processLine := func(rawLine []byte) bool {
+	processEvent := func(commitTerminal bool) (bool, error) {
+		hadData := len(currentEventData) > 0
+		data := strings.Join(currentEventData, "\n")
+		currentEventData = currentEventData[:0]
+		eventType := currentEventType
+		currentEventType = ""
+		payload := strings.TrimSpace(data)
+		if payload == "" {
+			if hadData {
+				return false, errors.New("DeepSeek Responses stream returned empty SSE data")
+			}
+			return false, nil
+		}
+		if payload == "[DONE]" {
+			return false, errors.New("DeepSeek Responses stream must not contain [DONE]")
+		}
+		dataBytes := redactDeepSeekAPIKey(account, []byte(data))
+		if !gjson.ValidBytes(dataBytes) {
+			return false, errors.New("DeepSeek Responses stream returned malformed JSON data")
+		}
+		payloadObject := gjson.ParseBytes(dataBytes)
+		if !payloadObject.IsObject() {
+			return false, errors.New("DeepSeek Responses stream data must be a JSON object")
+		}
+		payloadType := strings.TrimSpace(payloadObject.Get("type").String())
+		if payloadType == "" {
+			return false, errors.New("DeepSeek Responses stream payload has no type")
+		}
+		if eventType != "" && eventType != payloadType {
+			return false, errors.New("DeepSeek Responses stream event type does not match its payload")
+		}
+		eventType = payloadType
+		observer.ObserveOpenAI(dataBytes, eventType)
+		s.parseSSEUsageBytes(dataBytes, usage)
+		if hit, code, message := detectOpenAICyberPolicy(dataBytes); hit {
+			if cyberMark == nil {
+				cyberMark = &CyberPolicyMark{
+					Code:           code,
+					Message:        message,
+					Body:           truncateString(string(dataBytes), 4096),
+					UpstreamStatus: http.StatusOK,
+				}
+			}
+		}
+		if responseID == "" {
+			responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
+		}
+		if firstTokenMs == nil && openAIStreamDataStartsVisibleOutput(strings.TrimSpace(string(dataBytes)), eventType) {
+			ms := int(time.Since(startTime).Milliseconds())
+			firstTokenMs = &ms
+		}
+		if openAIStreamEventTypeIsTerminal(eventType) {
+			if commitTerminal {
+				terminalEvent = eventType
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	collectLine := func(rawLine []byte) bool {
 		line := bytes.TrimSuffix(rawLine, []byte{'\r'})
 		trimmed := strings.TrimSpace(string(line))
 		if trimmed == "" {
-			atTerminalBoundary := pendingTerminalEvent != ""
-			if atTerminalBoundary {
-				terminalEvent = pendingTerminalEvent
-			}
-			pendingTerminalEvent = ""
-			currentEventType = ""
-			return atTerminalBoundary
+			return true
 		}
 		if strings.HasPrefix(trimmed, "event:") {
 			currentEventType = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
@@ -256,27 +318,7 @@ func (s *OpenAIGatewayService) handleDeepSeekResponsesStream(
 		if !ok {
 			return false
 		}
-		payload := strings.TrimSpace(data)
-		if payload == "" || payload == "[DONE]" {
-			return false
-		}
-		dataBytes := []byte(data)
-		eventType := strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
-		if eventType == "" {
-			eventType = currentEventType
-		}
-		observer.ObserveOpenAI(dataBytes, eventType)
-		s.parseSSEUsageBytes(dataBytes, usage)
-		if responseID == "" {
-			responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
-		}
-		if firstTokenMs == nil && openAIStreamDataStartsVisibleOutput(payload, eventType) {
-			ms := int(time.Since(startTime).Milliseconds())
-			firstTokenMs = &ms
-		}
-		if openAIStreamEventTypeIsTerminal(eventType) {
-			pendingTerminalEvent = eventType
-		}
+		currentEventData = append(currentEventData, data)
 		return false
 	}
 	missingTerminal := func(readErr error) (*deepSeekResponsesRelayResult, error) {
@@ -288,6 +330,23 @@ func (s *OpenAIGatewayService) handleDeepSeekResponsesStream(
 			return nil, s.newOpenAIStreamFailoverError(c, account, true, requestID, nil, message, resp.Header)
 		}
 		return result(), errors.New(message)
+	}
+	protocolFailure := func(protocolErr error) (*deepSeekResponsesRelayResult, error) {
+		if protocolErr == nil {
+			return result(), nil
+		}
+		if !clientOutputStarted {
+			return nil, s.newOpenAIStreamFailoverError(
+				c,
+				account,
+				true,
+				requestID,
+				nil,
+				protocolErr.Error(),
+				resp.Header,
+			)
+		}
+		return result(), protocolErr
 	}
 	finishTerminal := func() (*deepSeekResponsesRelayResult, error) {
 		if deepSeekResponsesRequiresUsage(terminalEvent) && !hasBillableOpenAIUsage(*usage) {
@@ -312,11 +371,93 @@ func (s *OpenAIGatewayService) handleDeepSeekResponsesStream(
 	}
 
 	s.writeDeepSeekResponsesHeaders(c, resp, true)
-	buf := make([]byte, 32*1024)
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	readResults := make(chan readResult, 1)
+	stopReading := make(chan struct{})
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		defer close(readResults)
+		for {
+			buf := make([]byte, 32*1024)
+			n, readErr := resp.Body.Read(buf)
+			read := readResult{err: readErr}
+			if n > 0 {
+				read.data = buf[:n]
+			}
+			select {
+			case readResults <- read:
+			case <-stopReading:
+				return
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+	defer func() {
+		close(stopReading)
+		_ = resp.Body.Close()
+		<-readerDone
+	}()
+
+	streamInterval := time.Duration(0)
+	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
+	}
+	var timeoutTimer *time.Timer
+	var timeoutCh <-chan time.Time
+	resetTimeout := func() {
+		if streamInterval <= 0 {
+			return
+		}
+		if timeoutTimer == nil {
+			timeoutTimer = time.NewTimer(streamInterval)
+			timeoutCh = timeoutTimer.C
+			return
+		}
+		if !timeoutTimer.Stop() {
+			select {
+			case <-timeoutTimer.C:
+			default:
+			}
+		}
+		timeoutTimer.Reset(streamInterval)
+	}
+	stopTimeout := func() {
+		if timeoutTimer == nil {
+			return
+		}
+		if !timeoutTimer.Stop() {
+			select {
+			case <-timeoutTimer.C:
+			default:
+			}
+		}
+	}
+	resetTimeout()
+	defer stopTimeout()
+
 	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			chunk := buf[:n]
+		var read readResult
+		var ok bool
+		select {
+		case read, ok = <-readResults:
+			if !ok {
+				return missingTerminal(io.EOF)
+			}
+			if len(read.data) > 0 {
+				resetTimeout()
+			}
+		case <-timeoutCh:
+			_ = resp.Body.Close()
+			return protocolFailure(fmt.Errorf("%w after %s", errDeepSeekSSEDataIntervalTimeout, streamInterval))
+		}
+		if len(read.data) > 0 {
+			chunk := read.data
 			pendingLine = append(pendingLine, chunk...)
 			for {
 				newline := bytes.IndexByte(pendingLine, '\n')
@@ -326,14 +467,22 @@ func (s *OpenAIGatewayService) handleDeepSeekResponsesStream(
 				wireLine := pendingLine[:newline+1]
 				line := wireLine[:newline]
 				pendingLine = pendingLine[newline+1:]
-				atTerminalBoundary := processLine(line)
+				atEventBoundary := collectLine(line)
+				terminal := false
+				if atEventBoundary {
+					var processErr error
+					terminal, processErr = processEvent(true)
+					if processErr != nil {
+						return protocolFailure(processErr)
+					}
+				}
 				if guardErr := sensitiveGuard.PushWireLine(wireLine, func(safeWire []byte) error {
 					writeWire(safeWire)
 					return nil
 				}); guardErr != nil {
 					return result(), guardErr
 				}
-				if atTerminalBoundary {
+				if terminal {
 					return finishTerminal()
 				}
 			}
@@ -341,9 +490,16 @@ func (s *OpenAIGatewayService) handleDeepSeekResponsesStream(
 				return result(), fmt.Errorf("DeepSeek Responses SSE line exceeds max size %d", maxLineSize)
 			}
 		}
-		if readErr != nil {
+		if read.err != nil {
 			if len(pendingLine) > 0 {
-				_ = processLine(pendingLine)
+				_ = collectLine(pendingLine)
+			}
+			if len(currentEventData) > 0 {
+				if _, processErr := processEvent(false); processErr != nil {
+					return protocolFailure(processErr)
+				}
+			}
+			if len(pendingLine) > 0 {
 				if guardErr := sensitiveGuard.PushWireLine(pendingLine, func(safeWire []byte) error {
 					writeWire(safeWire)
 					return nil
@@ -363,7 +519,7 @@ func (s *OpenAIGatewayService) handleDeepSeekResponsesStream(
 			if ctx.Err() != nil {
 				return result(), fmt.Errorf("DeepSeek Responses stream interrupted: %w", ctx.Err())
 			}
-			return missingTerminal(readErr)
+			return missingTerminal(read.err)
 		}
 	}
 }
