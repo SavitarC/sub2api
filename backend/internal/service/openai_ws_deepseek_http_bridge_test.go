@@ -203,6 +203,95 @@ func TestForwardDeepSeekResponsesWebSocketTurnUsesNativeHTTPResponses(t *testing
 	require.Len(t, result.wsReplayInput, 1)
 }
 
+func TestReadDeepSeekWSResponsesSSERejectsReplayAggregateBytes(t *testing.T) {
+	ctx := context.Background()
+	c := newDeepSeekWSTestGinContext(ctx)
+	cfg := deepSeekWSTestConfig()
+	cfg.Gateway.MaxBodySize = 200
+	svc := &OpenAIGatewayService{cfg: cfg}
+	item := `{"type":"message","padding":"` + strings.Repeat("x", 90) + `"}`
+	sse := strings.Join([]string{
+		`data: {"type":"response.output_item.done","output_index":0,"item":` + item + `}`,
+		"",
+		`data: {"type":"response.output_item.done","output_index":1,"item":` + item + `}`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(sse)),
+	}
+	var writes [][]byte
+	state, err := svc.readDeepSeekWSResponsesSSE(ctx, c, nil, resp, time.Now(), func(event []byte) error {
+		writes = append(writes, append([]byte(nil), event...))
+		return nil
+	})
+	require.ErrorIs(t, err, errDeepSeekWSReplayLimit)
+	var closeErr *OpenAIWSClientCloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.Equal(t, coderws.StatusMessageTooBig, closeErr.StatusCode())
+	require.Len(t, state.replay.items, 1)
+	require.Len(t, writes, 1, "the event that exceeds the replay limit must not be forwarded")
+}
+
+func TestReadDeepSeekWSResponsesSSERejectsReplayAggregateItems(t *testing.T) {
+	ctx := context.Background()
+	c := newDeepSeekWSTestGinContext(ctx)
+	cfg := deepSeekWSTestConfig()
+	cfg.Gateway.MaxBodySize = 1024 * 1024
+	svc := &OpenAIGatewayService{cfg: cfg}
+	items := strings.TrimSuffix(strings.Repeat(`{},`, deepSeekWSReplayMaxItems+1), ",")
+	sse := `data: {"type":"response.completed","response":{"id":"resp_too_many_items","status":"completed","output":[` + items + `],"usage":{"input_tokens":1,"output_tokens":1}}}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(sse)),
+	}
+	writes := 0
+	state, err := svc.readDeepSeekWSResponsesSSE(ctx, c, nil, resp, time.Now(), func([]byte) error {
+		writes++
+		return nil
+	})
+	require.ErrorIs(t, err, errDeepSeekWSReplayLimit)
+	var closeErr *OpenAIWSClientCloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.Equal(t, coderws.StatusMessageTooBig, closeErr.StatusCode())
+	require.Empty(t, state.replay.items)
+	require.Equal(t, "resp_too_many_items", state.responseID)
+	require.Equal(t, "response.completed", state.terminalEvent)
+	require.Equal(t, 1, state.usage.InputTokens)
+	require.Equal(t, 1, state.usage.OutputTokens)
+	require.Zero(t, writes, "an oversized terminal event must not be forwarded")
+}
+
+func TestDeepSeekWSReplayCollectorPreservesNonSuccessTerminalOutput(t *testing.T) {
+	collector := deepSeekWSReplayCollector{maxBytes: 1024}
+	require.NoError(t, collector.observe(
+		"response.output_item.done",
+		[]byte(`{"type":"response.output_item.done","item":{"id":"msg_incremental","type":"message"}}`),
+	))
+
+	require.NoError(t, collector.observe(
+		"response.failed",
+		[]byte(`{"type":"response.failed","response":{"id":"resp_failed","status":"failed"}}`),
+	))
+	require.Len(t, collector.items, 1, "a non-success terminal without output must preserve incrementally collected replay items")
+	require.Equal(t, "msg_incremental", gjson.GetBytes(collector.items[0], "id").String())
+
+	require.NoError(t, collector.observe(
+		"response.incomplete",
+		[]byte(`{"type":"response.incomplete","response":{"id":"resp_incomplete","status":"incomplete","output":[{"id":"msg_terminal","type":"message"}]}}`),
+	))
+	require.Len(t, collector.items, 1, "terminal response.output must replace the incremental replay view")
+	require.Equal(t, "msg_terminal", gjson.GetBytes(collector.items[0], "id").String())
+
+	require.NoError(t, collector.observe(
+		"response.cancelled",
+		[]byte(`{"type":"response.cancelled","response":{"id":"resp_cancelled","status":"cancelled"}}`),
+	))
+	require.Empty(t, collector.items, "cancelled turns must not remain replayable")
+}
+
 func TestForwardDeepSeekResponsesWebSocketTurnAppliesAccountModelMapping(t *testing.T) {
 	ctx := context.WithValue(context.Background(), ctxkey.UserID, int64(42))
 	c := newDeepSeekWSTestGinContext(ctx)
@@ -525,34 +614,61 @@ func TestForwardDeepSeekResponsesWebSocketTurnFailsClosedOnInterleavedCredential
 	ctx := context.WithValue(context.Background(), ctxkey.UserID, int64(73))
 	account := deepSeekWSTestAccount()
 	secret := account.GetDeepSeekAPIKey()
-	makeDelta := func(itemID, delta string) string {
+	makeDelta := func(eventType, itemID string, contentIndex int, delta string) string {
 		body, err := json.Marshal(map[string]any{
-			"type": "response.output_text.delta", "item_id": itemID, "output_index": 0, "content_index": 0, "delta": delta,
+			"type": eventType, "item_id": itemID, "output_index": 0, "content_index": contentIndex, "summary_index": 0, "delta": delta,
 		})
 		require.NoError(t, err)
 		return "data: " + string(body) + "\n\n"
 	}
-	sse := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_interleaved_secret\"}}\n\n" +
-		makeDelta("msg_a", secret[:1]) +
-		makeDelta("msg_b", "benign interleaving") +
-		makeDelta("msg_a", secret[1:])
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(sse)),
-	}}
-	svc := &OpenAIGatewayService{cfg: deepSeekWSTestConfig(), httpUpstream: upstream}
-	var writes [][]byte
-	result, err := svc.ForwardDeepSeekResponsesWebSocketTurn(ctx, newDeepSeekWSTestGinContext(ctx), account, secret, []byte(`{"model":"deepseek-v4","input":"hello"}`), 1, func(event []byte) error {
-		writes = append(writes, append([]byte(nil), event...))
-		return nil
-	})
+	tests := []struct {
+		name   string
+		first  string
+		middle string
+		last   string
+	}{
+		{
+			name:   "different items",
+			first:  makeDelta("response.output_text.delta", "msg_a", 0, secret[:1]),
+			middle: makeDelta("response.output_text.delta", "msg_b", 0, "benign interleaving"),
+			last:   makeDelta("response.output_text.delta", "msg_a", 0, secret[1:]),
+		},
+		{
+			name:   "same item different content indexes",
+			first:  makeDelta("response.output_text.delta", "msg_shared", 0, secret[:1]),
+			middle: makeDelta("response.output_text.delta", "msg_shared", 1, "benign interleaving"),
+			last:   makeDelta("response.output_text.delta", "msg_shared", 0, secret[1:]),
+		},
+		{
+			name:   "same item and indexes different event families",
+			first:  makeDelta("response.output_text.delta", "msg_shared", 0, secret[:1]),
+			middle: makeDelta("response.reasoning_text.delta", "msg_shared", 0, "benign interleaving"),
+			last:   makeDelta("response.output_text.delta", "msg_shared", 0, secret[1:]),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sse := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_interleaved_secret\"}}\n\n" +
+				tt.first + tt.middle + tt.last
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(sse)),
+			}}
+			svc := &OpenAIGatewayService{cfg: deepSeekWSTestConfig(), httpUpstream: upstream}
+			var writes [][]byte
+			result, err := svc.ForwardDeepSeekResponsesWebSocketTurn(ctx, newDeepSeekWSTestGinContext(ctx), account, secret, []byte(`{"model":"deepseek-v4","input":"hello"}`), 1, func(event []byte) error {
+				writes = append(writes, append([]byte(nil), event...))
+				return nil
+			})
 
-	require.ErrorIs(t, err, errDeepSeekWSSensitiveDelta)
-	require.NotNil(t, result)
-	require.NotContains(t, string(bytes.Join(writes, nil)), secret)
-	var failoverErr *UpstreamFailoverError
-	require.False(t, errors.As(err, &failoverErr))
+			require.ErrorIs(t, err, errDeepSeekWSSensitiveDelta)
+			require.NotNil(t, result)
+			require.NotContains(t, string(bytes.Join(writes, nil)), secret)
+			var failoverErr *UpstreamFailoverError
+			require.False(t, errors.As(err, &failoverErr))
+		})
+	}
 }
 
 func TestDeepSeekWSSensitiveDeltaGuardDetectsOverlappingPrefix(t *testing.T) {

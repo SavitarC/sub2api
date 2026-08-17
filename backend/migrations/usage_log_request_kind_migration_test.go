@@ -8,7 +8,7 @@ import (
 )
 
 func TestUsageLogRequestKindMigration(t *testing.T) {
-	content, err := FS.ReadFile("223_add_usage_log_request_kind.sql")
+	content, err := FS.ReadFile("225_add_usage_log_request_kind.sql")
 	require.NoError(t, err)
 
 	sql := strings.Join(strings.Fields(string(content)), " ")

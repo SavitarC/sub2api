@@ -1652,6 +1652,7 @@ func TestAdminService_CreateCompositeRoute_NormalizesAndPersists(t *testing.T) {
 
 func TestAdminService_CompositeRouteDeepSeekEndpointCapabilities(t *testing.T) {
 	allowed := []string{
+		CompositeRouteEndpointAny,
 		CompositeRouteEndpointMessages,
 		CompositeRouteEndpointChatCompletions,
 		CompositeRouteEndpointResponses,
@@ -1676,11 +1677,11 @@ func TestAdminService_CompositeRouteDeepSeekEndpointCapabilities(t *testing.T) {
 	}
 
 	rejected := []string{
-		CompositeRouteEndpointAny,
 		CompositeRouteEndpointCountTokens,
 		CompositeRouteEndpointEmbeddings,
 		CompositeRouteEndpointImages,
 		CompositeRouteEndpointGemini,
+		"respnses",
 	}
 	for _, endpoint := range rejected {
 		t.Run("rejects "+endpoint, func(t *testing.T) {
@@ -1700,6 +1701,38 @@ func TestAdminService_CompositeRouteDeepSeekEndpointCapabilities(t *testing.T) {
 			require.Nil(t, routeRepo.created)
 		})
 	}
+}
+
+func TestAdminService_CreateCompositeRoute_BlankEndpointDefaultsToAnyButTypoIsRejected(t *testing.T) {
+	newService := func() (*adminServiceImpl, *compositeRouteRepoStubForAdmin) {
+		routeRepo := &compositeRouteRepoStubForAdmin{}
+		return &adminServiceImpl{
+			groupRepo:          &groupRepoStubForAdmin{getByID: &Group{ID: 7, Platform: PlatformComposite}},
+			compositeRouteRepo: routeRepo,
+		}, routeRepo
+	}
+
+	svc, routeRepo := newService()
+	route, err := svc.CreateCompositeRoute(context.Background(), 7, CompositeRouteInput{
+		PublicModel:    "deepseek/default",
+		TargetPlatform: PlatformDeepSeek,
+		Endpoint:       "   ",
+		Enabled:        true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, CompositeRouteEndpointAny, route.Endpoint)
+	require.Equal(t, route, routeRepo.created)
+
+	svc, routeRepo = newService()
+	route, err = svc.CreateCompositeRoute(context.Background(), 7, CompositeRouteInput{
+		PublicModel:    "openai/typo",
+		TargetPlatform: PlatformOpenAI,
+		Endpoint:       " respnses ",
+		Enabled:        true,
+	})
+	require.Nil(t, route)
+	require.Equal(t, "COMPOSITE_ROUTE_ENDPOINT_UNSUPPORTED", infraerrors.Reason(err))
+	require.Nil(t, routeRepo.created)
 }
 
 func TestAdminService_UpdateCompositeRouteRejectsUnsupportedDeepSeekEndpoint(t *testing.T) {
@@ -1818,6 +1851,38 @@ func TestAdminService_PreviewCompositeRouteUsesExplicitRoutes(t *testing.T) {
 	require.Equal(t, CompositeRouteSourceExplicit, decision.Source)
 	require.Equal(t, PlatformAnthropic, decision.TargetPlatform)
 	require.Equal(t, "claude-sonnet-4-6", decision.UpstreamModel)
+	require.NotNil(t, decision.Route)
+	require.Equal(t, int64(11), decision.Route.ID)
+}
+
+func TestAdminService_PreviewDeepSeekAnyRouteWithDefaultEndpoint(t *testing.T) {
+	groupRepo := &groupRepoStubForAdmin{
+		getByID: &Group{ID: 7, Platform: PlatformComposite},
+	}
+	routeRepo := &compositeRouteRepoStubForAdmin{
+		routes: []CompositeModelRoute{{
+			ID:             11,
+			GroupID:        7,
+			PublicModel:    "company-model",
+			MatchType:      CompositeRouteMatchExact,
+			TargetPlatform: PlatformDeepSeek,
+			UpstreamModel:  "deepseek-v4-pro",
+			Endpoint:       CompositeRouteEndpointAny,
+			Priority:       100,
+			Enabled:        true,
+		}},
+	}
+	svc := &adminServiceImpl{groupRepo: groupRepo, compositeRouteRepo: routeRepo}
+
+	decision, err := svc.PreviewCompositeRoute(context.Background(), 7, CompositeRoutePreviewRequest{
+		Model: "company-model",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.True(t, decision.Matched)
+	require.Equal(t, CompositeRouteEndpointAny, decision.Endpoint)
+	require.Equal(t, PlatformDeepSeek, decision.TargetPlatform)
 	require.NotNil(t, decision.Route)
 	require.Equal(t, int64(11), decision.Route.ID)
 }

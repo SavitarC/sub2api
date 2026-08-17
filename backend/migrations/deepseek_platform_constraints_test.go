@@ -8,7 +8,7 @@ import (
 )
 
 func TestDeepSeekPlatformConstraintsMigration(t *testing.T) {
-	content, err := FS.ReadFile("222_add_deepseek_platform_constraints.sql")
+	content, err := FS.ReadFile("224_add_deepseek_platform_constraints.sql")
 	require.NoError(t, err)
 
 	sql := strings.Join(strings.Fields(string(content)), " ")

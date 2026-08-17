@@ -214,6 +214,28 @@ func TestPromptSnapshotResponsesOrdinaryTurnIncludesAllToolOutputs(t *testing.T)
 	}
 }
 
+func TestPromptSnapshotResponsesStructuredToolOutputScansEveryTextLeaf(t *testing.T) {
+	longAlphanumeric := strings.Repeat("bomb", 100)
+	body := []byte(strings.Replace(`{"input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"benign request"}]},
+		{"type":"function_call_output","call_id":"call_1","output":{
+			"text":"benign result",
+			"result":"blocked sibling result",
+			"long":"__LONG_ALPHANUMERIC__",
+			"nested":[{"content":{"detail":"deep blocked result","url":"https://example.test/blocked-query"}},"array result","array result"]
+		}}
+	]}`, "__LONG_ALPHANUMERIC__", longAlphanumeric, 1))
+
+	snapshot, err := ExtractPromptSnapshot(Request{Protocol: "openai_responses", Body: body})
+
+	require.NoError(t, err)
+	for _, expected := range []string{"benign result", "blocked sibling result", "deep blocked result", "array result", "https://example.test/blocked-query"} {
+		require.Contains(t, snapshot.ScanText, expected)
+	}
+	require.Contains(t, snapshot.ScanText, longAlphanumeric)
+	require.Equal(t, 1, strings.Count(snapshot.ScanText, "array result"))
+}
+
 func TestPromptSnapshotResponsesWebSocketOrdinaryToolOutputObject(t *testing.T) {
 	body := []byte(`{"type":"response.create","input":{"type":"mcp_tool_call_output","call_id":"call_1","output":"single result"}}`)
 

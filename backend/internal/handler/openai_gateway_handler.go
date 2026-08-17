@@ -417,7 +417,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 	}
 	legacyCompact := isOpenAILegacyCompactPath(c)
-	nativeV2 := isBareOpenAIResponsesPath(c) && isOpenAIRemoteCompactionV2Request(body)
+	nativeV2 := !isDeepSeekRequest && isBareOpenAIResponsesPath(c) && isOpenAIRemoteCompactionV2Request(body)
+	if nativeV2 {
+		// 原生 v2 压缩出站前补注 x-codex-beta-features: remote_compaction_v2，
+		// 与真实 Codex 线型一致（网关链剥头后本级负责恢复，#5586）。
+		service.MarkOpenAINativeCompactionV2(c)
+	}
 
 	reqStream, ok := parseOpenAICompatibleStream(body)
 	if !ok {
@@ -686,7 +691,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockKeyHTTP = service.CyberSessionBlockKey(apiKey.ID, c, sessionHashBody)
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil && !partialUsageFailure, cyberBlockKeyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
+		// response.failed results continue below to the normal usage writer, which
+		// marks the single row as cyber-blocked. Do not also enqueue the fallback
+		// cyber usage writer for the same upstream usage.
+		cyberUsageNeedsFallback := err != nil && !partialUsageFailure &&
+			(result == nil || result.UpstreamTerminalEvent != "response.failed")
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, cyberUsageNeedsFallback, cyberBlockKeyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -900,7 +910,7 @@ func isExactDeepSeekResponsesPath(c *gin.Context) bool {
 		return false
 	}
 	switch strings.TrimSpace(c.Request.URL.Path) {
-	case "/v1/responses", "/responses", "/backend-api/codex/responses":
+	case "/v1/responses", "/openai/v1/responses", "/responses", "/backend-api/codex/responses":
 		return true
 	default:
 		return false
@@ -912,7 +922,7 @@ func isExactDeepSeekResponsesCompactPath(c *gin.Context) bool {
 		return false
 	}
 	switch strings.TrimSpace(c.Request.URL.Path) {
-	case "/v1/responses/compact", "/responses/compact", "/backend-api/codex/responses/compact":
+	case "/v1/responses/compact", "/openai/v1/responses/compact", "/responses/compact", "/backend-api/codex/responses/compact":
 		return true
 	default:
 		return false

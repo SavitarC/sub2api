@@ -556,10 +556,14 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 
 		model := compositeRequestModelFromBody(c.GetHeader("Content-Type"), body)
 		if model != "" {
-			decision, err := resolver.Resolve(c.Request.Context(), apiKey.Group.ID, model, compositeRouteEndpointForPath(c.Request.URL.Path))
+			endpoint := compositeRouteEndpointForPath(c.Request.URL.Path)
+			decision, err := resolver.Resolve(c.Request.Context(), apiKey.Group.ID, model, endpoint)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"type": "server_error", "message": "Failed to resolve composite model route"}})
 				c.Abort()
+				return
+			}
+			if rejectUnsupportedCompositeRouteEndpoint(c, decision, endpoint) {
 				return
 			}
 			if decision.Matched {
@@ -627,6 +631,9 @@ func compositeGeminiTargetPlatformMiddleware(resolver *service.CompositeRouteRes
 					c.Abort()
 					return
 				}
+				if rejectUnsupportedCompositeRouteEndpoint(c, decision, service.CompositeRouteEndpointGemini) {
+					return
+				}
 				if decision.Matched {
 					c.Request = c.Request.WithContext(service.WithCompositeRouteDecision(c.Request.Context(), decision))
 				}
@@ -637,6 +644,23 @@ func compositeGeminiTargetPlatformMiddleware(resolver *service.CompositeRouteRes
 		}
 		c.Next()
 	}
+}
+
+func rejectUnsupportedCompositeRouteEndpoint(c *gin.Context, decision service.CompositeRouteDecision, endpoint string) bool {
+	if strings.TrimSpace(decision.TargetPlatform) == "" {
+		return false
+	}
+	if service.CompositeRouteRequestEndpointSupported(decision.TargetPlatform, endpoint) {
+		return false
+	}
+	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+	c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
+		"error": gin.H{
+			"type":    "not_found_error",
+			"message": endpoint + " is not supported for this platform",
+		},
+	})
+	return true
 }
 
 // grokCustomVoiceEndpoint derives the upstream Voice endpoint for the

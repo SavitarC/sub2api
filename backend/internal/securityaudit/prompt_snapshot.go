@@ -251,13 +251,15 @@ func responsesToolOutputSegments(value any) []promptSegment {
 }
 
 func responsesToolOutputTexts(value any) []string {
-	if texts := contentTexts(value); len(texts) > 0 {
+	if text, ok := value.(string); ok {
+		return []string{text}
+	}
+	texts := structuredToolOutputTextLeaves(value)
+	if len(texts) > 0 {
 		return texts
 	}
 	switch value.(type) {
 	case nil:
-		return nil
-	case string:
 		return nil
 	default:
 		encoded, err := json.Marshal(value)
@@ -265,6 +267,64 @@ func responsesToolOutputTexts(value any) []string {
 			return nil
 		}
 		return []string{string(encoded)}
+	}
+}
+
+// structuredToolOutputTextLeaves walks the complete provider-owned output
+// instead of stopping after a familiar text/content field. Tool results are
+// otherwise arbitrary JSON, so a sibling or nested field remains model-visible
+// and must participate in the prompt audit too.
+func structuredToolOutputTextLeaves(value any) []string {
+	result := make([]string, 0, 4)
+	seen := make(map[string]struct{})
+	var walk func(any)
+	walk = func(current any) {
+		switch typed := current.(type) {
+		case string:
+			text := strings.TrimSpace(typed)
+			if text == "" || isToolOutputMediaDataURI(text) {
+				return
+			}
+			if _, duplicate := seen[text]; duplicate {
+				return
+			}
+			seen[text] = struct{}{}
+			result = append(result, text)
+		case []any:
+			for _, item := range typed {
+				walk(item)
+			}
+		case map[string]any:
+			keys := make([]string, 0, len(typed))
+			for key := range typed {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				child := typed[key]
+				if key == "type" && isToolOutputContentDiscriminator(stringValue(child)) {
+					continue
+				}
+				walk(child)
+			}
+		}
+	}
+	walk(value)
+	return result
+}
+
+func isToolOutputMediaDataURI(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	return strings.HasPrefix(lower, "data:image/") || strings.HasPrefix(lower, "data:video/")
+}
+
+func isToolOutputContentDiscriminator(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "text", "input_text", "output_text", "message", "image_url", "input_image", "image":
+		return true
+	default:
+		return false
 	}
 }
 

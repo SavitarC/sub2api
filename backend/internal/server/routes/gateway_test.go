@@ -47,7 +47,7 @@ func newGatewayRoutesTestRouterWithConfigAndResolver(cfg *config.Config, composi
 			groupID := int64(1)
 			c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
 				GroupID: &groupID,
-				Group:   &service.Group{Platform: groupPlatform},
+				Group:   &service.Group{ID: groupID, Platform: groupPlatform},
 			})
 			c.Next()
 		}),
@@ -591,9 +591,7 @@ func TestGatewayRoutesDeepSeekBareChatAndResponsesReachOpenAICompatibleHandlers(
 func TestGatewayRoutesCompositeDeepSeekBareAPIsUseNativeProtocolHandlers(t *testing.T) {
 	resolver := service.NewCompositeRouteResolver(compositeRouteRepoStub{
 		routes: []service.CompositeModelRoute{
-			{ID: 1, GroupID: 1, PublicModel: "deepseek-alias", MatchType: service.CompositeRouteMatchExact, TargetPlatform: service.PlatformDeepSeek, UpstreamModel: "deepseek-v4-pro", Endpoint: service.CompositeRouteEndpointChatCompletions, Priority: 100, Enabled: true},
-			{ID: 2, GroupID: 1, PublicModel: "deepseek-alias", MatchType: service.CompositeRouteMatchExact, TargetPlatform: service.PlatformDeepSeek, UpstreamModel: "deepseek-v4-pro", Endpoint: service.CompositeRouteEndpointResponses, Priority: 100, Enabled: true},
-			{ID: 3, GroupID: 1, PublicModel: "deepseek-alias", MatchType: service.CompositeRouteMatchExact, TargetPlatform: service.PlatformDeepSeek, UpstreamModel: "deepseek-v4-pro", Endpoint: service.CompositeRouteEndpointMessages, Priority: 100, Enabled: true},
+			{ID: 1, GroupID: 1, PublicModel: "deepseek-alias", MatchType: service.CompositeRouteMatchExact, TargetPlatform: service.PlatformDeepSeek, UpstreamModel: "deepseek-v4-pro", Endpoint: service.CompositeRouteEndpointAny, Priority: 100, Enabled: true},
 		},
 	})
 	router := newGatewayRoutesTestRouterWithConfigAndResolver(&config.Config{
@@ -615,6 +613,43 @@ func TestGatewayRoutesCompositeDeepSeekBareAPIsUseNativeProtocolHandlers(t *test
 		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should reach its native protocol handler", path)
 		require.NotContains(t, w.Body.String(), "not supported", "path=%s", path)
 		require.NotContains(t, w.Body.String(), "composite groups", "path=%s", path)
+	}
+}
+
+func TestGatewayRoutesCompositeDeepSeekAnyRejectsUnsupportedEndpoints(t *testing.T) {
+	resolver := service.NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []service.CompositeModelRoute{
+			{ID: 1, GroupID: 1, PublicModel: "gpt-5", MatchType: service.CompositeRouteMatchExact, TargetPlatform: service.PlatformDeepSeek, UpstreamModel: "deepseek-v4-pro", Endpoint: service.CompositeRouteEndpointAny, Priority: 100, Enabled: true},
+		},
+	})
+	router := newGatewayRoutesTestRouterWithConfigAndResolver(&config.Config{
+		Gateway: config.GatewayConfig{MaxBodySize: 1024 * 1024, TextMaxBodySize: 1024 * 1024},
+	}, resolver, service.PlatformComposite)
+
+	for _, tc := range []struct {
+		path string
+		body string
+	}{
+		{path: "/v1/messages/count_tokens", body: `{"model":"gpt-5","messages":[]}`},
+		{path: "/v1/embeddings", body: `{"model":"gpt-5","input":"hello"}`},
+		{path: "/v1/images/generations", body: `{"model":"gpt-5","prompt":"draw"}`},
+		{path: "/v1/images/generations/async", body: `{"model":"gpt-5","prompt":"draw"}`},
+		// These feature paths intentionally fall back to the request endpoint
+		// class `any`; HTTP dispatch must reject them before an unrelated
+		// upstream feature handler can run.
+		{path: "/v1/live", body: `{"model":"gpt-5"}`},
+		{path: "/v1/videos", body: `{"model":"gpt-5","prompt":"animate"}`},
+		{path: "/v1/tts", body: `{"model":"gpt-5","input":"hello"}`},
+		{path: "/v1/web_search", body: `{"model":"gpt-5","query":"hello"}`},
+		{path: "/backend-api/codex/alpha/search", body: `{"model":"gpt-5","query":"hello"}`},
+	} {
+		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusNotFound, w.Code, "path=%s body=%s", tc.path, w.Body.String())
+		require.Contains(t, w.Body.String(), "not supported for this platform", "path=%s", tc.path)
 	}
 }
 

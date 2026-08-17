@@ -106,6 +106,18 @@ func MarkDeepSeekCompaction(c *gin.Context, mode DeepSeekCompactionMode) {
 	}
 }
 
+// ClearDeepSeekCompaction resets request-scoped state before reusing a Gin
+// context for the next turn of a Responses WebSocket connection.
+func ClearDeepSeekCompaction(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(deepSeekCompactionModeKey, DeepSeekCompactionModeNone)
+	c.Set(deepSeekCompactPreparedKey, nil)
+	c.Set(deepSeekResponsesValidatedKey, false)
+	clearOpenAICompactClientStream(c)
+}
+
 // MarkDeepSeekRemoteCompactionV2 keeps the existing call site contract for the
 // current Codex remote_compaction_v2 streaming wire.
 func MarkDeepSeekRemoteCompactionV2(c *gin.Context) {
@@ -286,8 +298,9 @@ func scanDeepSeekResponsesJSON(body []byte) (bool, error) {
 // probeDeepSeekResponsesCompactionState performs a streaming, fixed-state
 // probe. Provider-native fields remain opaque unless an input item identifies
 // itself as compaction state, at which point the caller runs the strict scan.
-// Root model and input stay strict even for ordinary requests because routing
-// and policy inspection consume them before the original JSON reaches upstream.
+// Root model, input, and stream stay strict even for ordinary requests because
+// routing, policy inspection, and wire selection consume them before the
+// original JSON reaches upstream.
 func probeDeepSeekResponsesCompactionState(body []byte) (bool, error) {
 	return scanDeepSeekResponsesJSONWithMode(body, false)
 }
@@ -364,7 +377,8 @@ func consumeDeepSeekResponsesJSONToken(
 			case deepSeekResponsesJSONScanContentItem:
 				canonical, bit, recognized = deepSeekResponsesCanonicalJSONKey(key, deepSeekResponsesContentItemJSONKeys[:])
 			}
-			strictKey := scan.strict || (mode == deepSeekResponsesJSONScanRoot && (canonical == "model" || canonical == "input"))
+			strictKey := scan.strict || (mode == deepSeekResponsesJSONScanRoot &&
+				(canonical == "model" || canonical == "input" || canonical == "stream"))
 			if recognized && strictKey {
 				if key != canonical {
 					return ErrDeepSeekResponsesNonCanonicalJSONKey
@@ -986,7 +1000,8 @@ func (s *OpenAIGatewayService) readDeepSeekCompactResponsesStream(c *gin.Context
 		case "response.created", "response.in_progress", "response.output_item.added",
 			"response.output_item.done", "response.content_part.added", "response.content_part.done",
 			"response.output_text.done", "response.reasoning_summary_text.delta",
-			"response.reasoning_summary_text.done", "response.reasoning_text.delta",
+			"response.reasoning_summary_text.done", "response.reasoning_summary_part.added",
+			"response.reasoning_summary_part.done", "response.reasoning_text.delta",
 			"response.reasoning_text.done":
 		case "error":
 		default:
@@ -996,27 +1011,42 @@ func (s *OpenAIGatewayService) readDeepSeekCompactResponsesStream(c *gin.Context
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), deepSeekCompactMaxSSELineBytes)
-	for scanner.Scan() {
-		line := strings.TrimSuffix(scanner.Text(), "\r")
+	streamInterval := time.Duration(0)
+	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
+	}
+	var scanStopErr error
+	scanErr := scanDeepSeekSSELinesWithIdleTimeout(scanner, resp.Body, streamInterval, func(rawLine string) bool {
+		line := strings.TrimSuffix(rawLine, "\r")
 		rawBytes += len(line) + 1
 		if rawBytes > deepSeekCompactMaxSSEBytes {
-			return result, errors.New("DeepSeek compact stream exceeds the supported size")
+			scanStopErr = errors.New("DeepSeek compact stream exceeds the supported size")
+			return false
 		}
 		if line == "" {
 			processEvent()
-			continue
+			return true
 		}
 		if strings.HasPrefix(line, "event:") {
 			currentEventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			continue
+			return true
 		}
 		if strings.HasPrefix(line, "data:") {
 			data := strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ")
 			dataLines = append(dataLines, data)
 		}
+		return true
+	})
+	if scanErr != nil {
+		result.UpstreamFailed = true
+		if errors.Is(scanErr, errDeepSeekSSEDataIntervalTimeout) {
+			return result, fmt.Errorf("DeepSeek compact stream data interval timeout: %w", scanErr)
+		}
+		return result, fmt.Errorf("read DeepSeek compact stream: %w", scanErr)
 	}
-	if err := scanner.Err(); err != nil {
-		return result, fmt.Errorf("read DeepSeek compact stream: %w", err)
+	if scanStopErr != nil {
+		result.UpstreamFailed = true
+		return result, scanStopErr
 	}
 	if len(dataLines) > 0 {
 		setProtocolErr(errors.New("DeepSeek compact stream ended before a blank-line-dispatched terminal event"))

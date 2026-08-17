@@ -339,8 +339,11 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		return nil
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	streamInterval := time.Duration(0)
+	if account.IsDeepSeek() && s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
+	}
+	scanErr := scanDeepSeekSSELinesWithIdleTimeout(scanner, resp.Body, streamInterval, func(line string) bool {
 		eventBoundary := line == "" || line == "\r"
 		refusalDetector.ObserveSSELine(line)
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
@@ -350,11 +353,17 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			} else {
 				if account.IsDeepSeek() && trimmedPayload != "" && !gjson.Valid(trimmedPayload) {
 					streamProtocolErr = errors.New("DeepSeek Chat stream returned malformed JSON data")
-					break
+					return false
 				}
-				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
-				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
-				if u := extractCCStreamUsage(payload); u != nil {
+				safePayloadString := payload
+				safePayload := []byte(payload)
+				if account.IsDeepSeekAPIKey() {
+					safePayload = redactDeepSeekAPIKey(account, safePayload)
+					safePayloadString = string(safePayload)
+				}
+				observer.ObserveOpenAI(safePayload, strings.TrimSpace(gjson.GetBytes(safePayload, "type").String()))
+				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(safePayloadString)
+				if u := extractCCStreamUsage(safePayloadString); u != nil {
 					usage = *u
 				}
 				if firstTokenMs == nil && !usageOnlyChunk {
@@ -367,7 +376,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		if sensitiveGuard != nil {
 			if guardErr := sensitiveGuard.PushWireLine(append([]byte(line), '\n'), emitGuardedWire); guardErr != nil {
 				streamProtocolErr = guardErr
-				break
+				return false
 			}
 		} else {
 			writeLine(line)
@@ -378,21 +387,34 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			}
 			if account.IsDeepSeek() && pendingDone {
 				sawDone = true
-				break
+				return false
 			}
-			continue
+			return true
 		}
 		if !clientDisconnected && clientOutputStarted {
 			c.Writer.Flush()
 		}
+		return true
+	})
+	if errors.Is(scanErr, errDeepSeekSSEDataIntervalTimeout) {
+		logger.L().Warn("openai chat_completions raw: data interval timeout",
+			zap.String("request_id", requestID),
+			zap.String("model", originalModel),
+			zap.Duration("interval", streamInterval),
+		)
+		streamProtocolErr = fmt.Errorf("DeepSeek Chat stream data interval timeout: %w", scanErr)
+		scanErr = nil
 	}
-	if sensitiveGuard != nil {
+	// Finish is only safe after a clean scanner stop. On timeout, read failure,
+	// or protocol abort, current may contain an SSE event without its blank-line
+	// boundary; emitting it would commit a partial response and suppress the
+	// pre-commit failover path.
+	if sensitiveGuard != nil && scanErr == nil && streamProtocolErr == nil {
 		if guardErr := sensitiveGuard.Finish(emitGuardedWire); guardErr != nil && streamProtocolErr == nil {
 			streamProtocolErr = guardErr
 		}
 	}
 
-	scanErr := scanner.Err()
 	if scanErr != nil {
 		if !errors.Is(scanErr, context.Canceled) && !errors.Is(scanErr, context.DeadlineExceeded) {
 			logger.L().Warn("openai chat_completions raw: stream read error",
@@ -525,6 +547,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		}
 		return nil, fmt.Errorf("read upstream body: %w", err)
 	}
+	respBody = redactDeepSeekAPIKey(account, respBody)
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -553,7 +576,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		c.Writer.Header().Set("Content-Type", "application/json")
 	}
 	c.Writer.WriteHeader(http.StatusOK)
-	_, _ = c.Writer.Write(redactDeepSeekAPIKey(account, respBody))
+	_, _ = c.Writer.Write(respBody)
 
 	return &OpenAIForwardResult{
 		RequestID:                     requestID,

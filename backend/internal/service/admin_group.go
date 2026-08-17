@@ -212,7 +212,7 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 	if !isConcreteRequestPlatform(input.TargetPlatform) {
 		return nil, fmt.Errorf("target_platform must be a concrete provider")
 	}
-	if !compositeRouteEndpointSupported(input.TargetPlatform, input.Endpoint) {
+	if !compositeRouteEndpointAllowed(input.TargetPlatform, input.Endpoint) {
 		return nil, infraerrors.BadRequest(
 			"COMPOSITE_ROUTE_ENDPOINT_UNSUPPORTED",
 			fmt.Sprintf("endpoint %s is not supported for target platform %s", input.Endpoint, input.TargetPlatform),
@@ -232,23 +232,6 @@ func compositeRouteFromInput(groupID int64, input CompositeRouteInput) (*Composi
 		Enabled:        input.Enabled,
 		Notes:          input.Notes,
 	}, nil
-}
-
-var compositeRouteEndpointCapabilities = map[string]map[string]struct{}{
-	PlatformDeepSeek: {
-		CompositeRouteEndpointMessages:        {},
-		CompositeRouteEndpointResponses:       {},
-		CompositeRouteEndpointChatCompletions: {},
-	},
-}
-
-func compositeRouteEndpointSupported(platform, endpoint string) bool {
-	capabilities, constrained := compositeRouteEndpointCapabilities[platform]
-	if !constrained {
-		return true
-	}
-	_, supported := capabilities[endpoint]
-	return supported
 }
 
 func defaultModelsListCandidateIDs(platform string) []string {

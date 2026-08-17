@@ -392,6 +392,50 @@ func TestRedactDeepSeekAPIKeyHandlesArbitraryJSONEscapesWithoutBreakingWire(t *t
 	require.Contains(t, gjson.GetBytes(redacted, "message").String(), deepSeekCredentialRedaction)
 }
 
+func TestRedactDeepSeekAPIKeyHandlesArbitraryEscapesInPlainText(t *testing.T) {
+	derivedUserID := deepSeekUserIDPrefix + strings.Repeat("A", deepSeekUserIDEncodedDigestBytes)
+	escapedDerivedUserID := strings.ReplaceAll(derivedUserID, "_", `\u005F`)
+
+	tests := []struct {
+		name   string
+		apiKey string
+		body   string
+		want   string
+	}{
+		{
+			name:   "malformed json with lowercase unicode escape",
+			apiKey: "sk-secret",
+			body:   `{"error":"credential sk-\u0073ecret`,
+			want:   `{"error":"credential ` + deepSeekCredentialRedaction,
+		},
+		{
+			name:   "plain text with uppercase unicode escape",
+			apiKey: "sk-zed",
+			body:   `proxy rejected credential sk-\u007Aed`,
+			want:   `proxy rejected credential ` + deepSeekCredentialRedaction,
+		},
+		{
+			name:   "plain text with escaped derived user id",
+			apiKey: deepSeekSecurityCanaryKey,
+			body:   "proxy echoed identity " + escapedDerivedUserID,
+			want:   "proxy echoed identity " + deepSeekCredentialRedaction,
+		},
+		{
+			name:   "benign escape and short identity placeholder",
+			apiKey: "sk-secret",
+			body:   `proxy said sk-\u0074est and dsu\u005fv1\u005fshort`,
+			want:   `proxy said sk-\u0074est and dsu\u005fv1\u005fshort`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := redactDeepSeekAPIKey(deepSeekSecurityTestAccount(tt.apiKey), []byte(tt.body))
+			require.Equal(t, tt.want, string(got))
+		})
+	}
+}
+
 func TestRedactDeepSeekAPIKeyPreservesSSEFramingWithEscapedJSON(t *testing.T) {
 	account := deepSeekSecurityTestAccount("sk-secret")
 	wire := "event: response.failed\r\n" +
@@ -405,14 +449,17 @@ func TestRedactDeepSeekAPIKeyPreservesSSEFramingWithEscapedJSON(t *testing.T) {
 	require.True(t, json.Valid([]byte(strings.TrimPrefix(dataLine, "data: "))))
 }
 
-func TestDeepSeekStreamingResponsesRedactCredentialCanary(t *testing.T) {
+func TestDeepSeekSuccessfulResponsesRedactCredentialCanary(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	account := deepSeekSecurityTestAccount(deepSeekSecurityCanaryKey)
+	derivedUserID := deepSeekUserIDPrefix + strings.Repeat("A", deepSeekUserIDEncodedDigestBytes)
+	sensitiveModel := "model-" + deepSeekSecurityCanaryKey + "-" + derivedUserID
+	redactedModel := "model-" + deepSeekCredentialRedaction + "-" + deepSeekCredentialRedaction
 
 	t.Run("chat", func(t *testing.T) {
 		c, recorder := deepSeekSecurityTestContext("/v1/chat/completions")
 		body := []byte(`{"model":"deepseek-v4-flash","messages":[],"stream":true}`)
-		upstreamBody := "data: {\"choices\":[{\"delta\":{\"content\":\"" + deepSeekSecurityCanaryKey + "\"}}]}\n\n" +
+		upstreamBody := "data: {\"model\":\"" + sensitiveModel + "\",\"choices\":[{\"delta\":{\"content\":\"" + deepSeekSecurityCanaryKey + "\"}}]}\n\n" +
 			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}\n\n" +
 			"data: [DONE]\n\n"
 		upstream := &httpUpstreamRecorder{resp: &http.Response{
@@ -429,6 +476,35 @@ func TestDeepSeekStreamingResponsesRedactCredentialCanary(t *testing.T) {
 		result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
 		require.NoError(t, err)
 		require.NotNil(t, result)
+		require.Equal(t, redactedModel, result.UpstreamResponseModel)
+		require.NotContains(t, observedUpstreamResponseModel(c), deepSeekSecurityCanaryKey)
+		require.NotContains(t, observedUpstreamResponseModel(c), derivedUserID)
+		require.NotContains(t, recorder.Body.String(), deepSeekSecurityCanaryKey)
+		require.Contains(t, recorder.Body.String(), deepSeekCredentialRedaction)
+		requireDeepSeekSecurityHeadersRedacted(t, recorder.Header())
+	})
+
+	t.Run("chat non-stream", func(t *testing.T) {
+		c, recorder := deepSeekSecurityTestContext("/v1/chat/completions")
+		body := []byte(`{"model":"deepseek-v4-flash","messages":[],"stream":false}`)
+		upstreamBody := `{"id":"chatcmpl_secret","object":"chat.completion","model":"` + sensitiveModel + `","choices":[{"index":0,"message":{"role":"assistant","content":"` + deepSeekSecurityCanaryKey + `"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`
+		upstream := &httpUpstreamRecorder{resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     deepSeekSecurityCanaryHeaders("application/json"),
+			Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+		}}
+		svc := &OpenAIGatewayService{
+			cfg:                  deepSeekSecurityTestConfig(),
+			httpUpstream:         upstream,
+			responseHeaderFilter: deepSeekSecurityResponseHeaderFilter(),
+		}
+
+		result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Equal(t, redactedModel, result.UpstreamResponseModel)
+		require.NotContains(t, observedUpstreamResponseModel(c), deepSeekSecurityCanaryKey)
+		require.NotContains(t, observedUpstreamResponseModel(c), derivedUserID)
 		require.NotContains(t, recorder.Body.String(), deepSeekSecurityCanaryKey)
 		require.Contains(t, recorder.Body.String(), deepSeekCredentialRedaction)
 		requireDeepSeekSecurityHeadersRedacted(t, recorder.Header())

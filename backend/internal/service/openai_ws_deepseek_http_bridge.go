@@ -22,10 +22,13 @@ var ErrDeepSeekWSTurnCancelled = errors.New("DeepSeek Responses WebSocket turn c
 
 var errDeepSeekWSSensitiveDelta = errors.New("DeepSeek Responses WebSocket upstream split a sensitive value across events")
 var errDeepSeekWSNativeTerminal = errors.New("DeepSeek Responses WebSocket upstream returned a non-success terminal")
+var errDeepSeekWSReplayLimit = errors.New("DeepSeek Responses WebSocket replay context limit exceeded")
 
 const (
 	deepSeekWSSensitiveHoldMaxEvents = 256
 	deepSeekWSSensitiveHoldMaxBytes  = 1024 * 1024
+	deepSeekWSReplayMaxItems         = 4096
+	deepSeekWSReplayDefaultMaxBytes  = int64(256 * 1024 * 1024)
 )
 
 type deepSeekWSAccountNeutralError struct {
@@ -130,44 +133,24 @@ type deepSeekWSTurnWireState struct {
 	mu            sync.Mutex
 	responseID    string
 	terminalEvent string
-	wroteEvent    bool
-	outputItems   []json.RawMessage
 }
 
 func (s *deepSeekWSTurnWireState) observe(message []byte) {
 	eventType, responseID, _ := parseOpenAIWSEventEnvelope(message)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.wroteEvent = true
 	if s.responseID == "" {
 		s.responseID = strings.TrimSpace(responseID)
 	}
 	if openAIStreamEventTypeIsTerminal(eventType) {
 		s.terminalEvent = eventType
 	}
-	switch eventType {
-	case "response.output_item.done":
-		if item := gjson.GetBytes(message, "item"); item.Exists() && item.Type == gjson.JSON {
-			s.outputItems = append(s.outputItems, json.RawMessage(append([]byte(nil), item.Raw...)))
-		}
-	case "response.completed", "response.done", "response.incomplete", "response.failed", "response.cancelled", "response.canceled":
-		if output := gjson.GetBytes(message, "response.output"); output.IsArray() {
-			items := make([]json.RawMessage, 0, len(output.Array()))
-			for _, item := range output.Array() {
-				if item.Type != gjson.JSON {
-					continue
-				}
-				items = append(items, json.RawMessage(append([]byte(nil), item.Raw...)))
-			}
-			s.outputItems = items
-		}
-	}
 }
 
-func (s *deepSeekWSTurnWireState) snapshot() (string, string, bool, []json.RawMessage) {
+func (s *deepSeekWSTurnWireState) snapshot() (string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.responseID, s.terminalEvent, s.wroteEvent, cloneOpenAIWSRawMessages(s.outputItems)
+	return s.responseID, s.terminalEvent
 }
 
 func parseDeepSeekWSCreateFrame(payload []byte, fallbackModel string) ([]byte, string, string, error) {
@@ -547,7 +530,7 @@ func (s *OpenAIGatewayService) ProxyDeepSeekResponsesWebSocket(
 				}
 				switch eventType {
 				case "response.cancel":
-					activeID, terminalEvent, _, _ := wireState.snapshot()
+					activeID, terminalEvent := wireState.snapshot()
 					if terminalEvent != "" {
 						cancelTurn(errors.New("response.cancel arrived after terminal event"))
 						outcome = <-outcomes
@@ -576,7 +559,7 @@ func (s *OpenAIGatewayService) ProxyDeepSeekResponsesWebSocket(
 					cancelResponseID = responseID
 					cancelTurn(ErrDeepSeekWSTurnCancelled)
 				case "response.create":
-					_, terminalEvent, _, _ := wireState.snapshot()
+					_, terminalEvent := wireState.snapshot()
 					if terminalEvent == "" {
 						cancelTurn(errors.New("overlapping response.create"))
 						outcome = <-outcomes
@@ -614,7 +597,8 @@ func (s *OpenAIGatewayService) ProxyDeepSeekResponsesWebSocket(
 		}
 		cancelTurn(context.Canceled)
 
-		responseID, terminalEvent, _, outputItems := wireState.snapshot()
+		responseID, terminalEvent := wireState.snapshot()
+		var outputItems []json.RawMessage
 		if outcome.result != nil {
 			if responseID == "" {
 				responseID = strings.TrimSpace(outcome.result.ResponseID)
@@ -623,7 +607,11 @@ func (s *OpenAIGatewayService) ProxyDeepSeekResponsesWebSocket(
 				terminalEvent = strings.TrimSpace(outcome.result.UpstreamTerminalEvent)
 			}
 			if outcome.result.wsReplayInputExists {
-				outputItems = cloneOpenAIWSRawMessages(outcome.result.wsReplayInput)
+				if limitErr := s.validateDeepSeekWSReplayInput(outcome.result.wsReplayInput); limitErr != nil {
+					outcome.err = newDeepSeekWSReplayLimitCloseError(limitErr)
+				} else {
+					outputItems = outcome.result.wsReplayInput
+				}
 			}
 		}
 		if cancelRequested {
@@ -656,7 +644,7 @@ func (s *OpenAIGatewayService) ProxyDeepSeekResponsesWebSocket(
 			ledger = nil
 		}
 		if len(outputItems) > 0 && terminalEvent != "response.cancelled" && terminalEvent != "response.canceled" {
-			ledger = append(ledger, cloneOpenAIWSRawMessages(outputItems)...)
+			ledger = append(ledger, outputItems...)
 		}
 		if responseID != "" {
 			lastResponseID = responseID
@@ -764,12 +752,96 @@ type deepSeekWSSSEState struct {
 	usage            OpenAIUsage
 	firstTokenMs     *int
 	wroteEvent       bool
-	outputItems      []json.RawMessage
+	replay           deepSeekWSReplayCollector
 	upstreamModel    string
 	modelConflict    bool
 	terminalData     []byte
 	eventAfterFinish bool
 	securityBlocked  bool
+}
+
+type deepSeekWSReplayCollector struct {
+	items    []json.RawMessage
+	bytes    int64
+	maxBytes int64
+}
+
+func (s *OpenAIGatewayService) deepSeekWSReplayMaxBytes() int64 {
+	if s != nil && s.cfg != nil && s.cfg.Gateway.MaxBodySize > 0 {
+		return s.cfg.Gateway.MaxBodySize
+	}
+	return deepSeekWSReplayDefaultMaxBytes
+}
+
+func newDeepSeekWSReplayLimitCloseError(cause error) error {
+	return NewOpenAIWSClientCloseError(
+		coderws.StatusMessageTooBig,
+		"DeepSeek WebSocket replay context limit exceeded",
+		cause,
+	)
+}
+
+func (s *OpenAIGatewayService) validateDeepSeekWSReplayInput(items []json.RawMessage) error {
+	if len(items) > deepSeekWSReplayMaxItems {
+		return fmt.Errorf("%w: more than %d output items", errDeepSeekWSReplayLimit, deepSeekWSReplayMaxItems)
+	}
+	maxBytes := s.deepSeekWSReplayMaxBytes()
+	var total int64
+	for _, item := range items {
+		itemBytes := int64(len(item))
+		if itemBytes > maxBytes-total {
+			return fmt.Errorf("%w: output items exceed gateway max_body_size (%d bytes)", errDeepSeekWSReplayLimit, maxBytes)
+		}
+		total += itemBytes
+	}
+	return nil
+}
+
+func (c *deepSeekWSReplayCollector) add(item gjson.Result) error {
+	if !item.Exists() || item.Type != gjson.JSON {
+		return nil
+	}
+	if len(c.items) >= deepSeekWSReplayMaxItems {
+		return fmt.Errorf("%w: more than %d output items", errDeepSeekWSReplayLimit, deepSeekWSReplayMaxItems)
+	}
+	itemBytes := int64(len(item.Raw))
+	if itemBytes > c.maxBytes-c.bytes {
+		return fmt.Errorf("%w: output items exceed gateway max_body_size (%d bytes)", errDeepSeekWSReplayLimit, c.maxBytes)
+	}
+	c.items = append(c.items, json.RawMessage(append([]byte(nil), item.Raw...)))
+	c.bytes += itemBytes
+	return nil
+}
+
+func (c *deepSeekWSReplayCollector) replace(output gjson.Result) error {
+	if !output.IsArray() {
+		return nil
+	}
+	maxBytes := c.maxBytes
+	*c = deepSeekWSReplayCollector{maxBytes: maxBytes}
+	var collectErr error
+	output.ForEach(func(_, item gjson.Result) bool {
+		collectErr = c.add(item)
+		return collectErr == nil
+	})
+	if collectErr != nil {
+		*c = deepSeekWSReplayCollector{maxBytes: maxBytes}
+		return collectErr
+	}
+	return nil
+}
+
+func (c *deepSeekWSReplayCollector) observe(eventType string, message []byte) error {
+	switch eventType {
+	case "response.output_item.done":
+		return c.add(gjson.GetBytes(message, "item"))
+	case "response.completed", "response.done", "response.incomplete", "response.failed":
+		return c.replace(gjson.GetBytes(message, "response.output"))
+	case "response.cancelled", "response.canceled":
+		c.items = nil
+		c.bytes = 0
+	}
+	return nil
 }
 
 type deepSeekWSSensitiveDeltaGuard struct {
@@ -847,28 +919,7 @@ func deepSeekWSLongestDerivedIDPrefixSuffix(value string) string {
 }
 
 func deepSeekWSSensitiveStreamKey(eventType string, message []byte) string {
-	if itemID := strings.TrimSpace(gjson.GetBytes(message, "item_id").String()); itemID != "" {
-		return "item:" + itemID
-	}
-	if itemID := strings.TrimSpace(gjson.GetBytes(message, "item.id").String()); itemID != "" {
-		return "item:" + itemID
-	}
-	if callID := strings.TrimSpace(gjson.GetBytes(message, "call_id").String()); callID != "" {
-		return "call:" + callID
-	}
-	index := func(path string) string {
-		value := gjson.GetBytes(message, path)
-		if !value.Exists() || value.Int() == 0 {
-			return "0"
-		}
-		return value.Raw
-	}
-	return strings.Join([]string{
-		strings.TrimSuffix(strings.TrimSuffix(eventType, ".delta"), ".done"),
-		index("output_index"),
-		index("content_index"),
-		index("summary_index"),
-	}, "|")
+	return deepSeekResponsesSSESensitiveStreamKey(eventType, message)
 }
 
 func (g *deepSeekWSSensitiveDeltaGuard) advancePrefix(prefix, delta string) (string, error) {
@@ -1015,28 +1066,6 @@ func deepSeekWSTerminalStatusMatches(eventType, status string) bool {
 	}
 }
 
-func collectDeepSeekWSOutputItems(eventType string, message []byte, existing []json.RawMessage) []json.RawMessage {
-	switch eventType {
-	case "response.output_item.done":
-		item := gjson.GetBytes(message, "item")
-		if item.Exists() && item.Type == gjson.JSON {
-			return append(existing, json.RawMessage(append([]byte(nil), item.Raw...)))
-		}
-	case "response.completed", "response.done", "response.incomplete", "response.failed", "response.cancelled", "response.canceled":
-		output := gjson.GetBytes(message, "response.output")
-		if output.IsArray() {
-			items := make([]json.RawMessage, 0, len(output.Array()))
-			for _, item := range output.Array() {
-				if item.Type == gjson.JSON {
-					items = append(items, json.RawMessage(append([]byte(nil), item.Raw...)))
-				}
-			}
-			return items
-		}
-	}
-	return existing
-}
-
 func (s *OpenAIGatewayService) readDeepSeekWSResponsesSSE(
 	ctx context.Context,
 	c *gin.Context,
@@ -1045,7 +1074,9 @@ func (s *OpenAIGatewayService) readDeepSeekWSResponsesSSE(
 	startTime time.Time,
 	write func([]byte) error,
 ) (deepSeekWSSSEState, error) {
-	var state deepSeekWSSSEState
+	state := deepSeekWSSSEState{
+		replay: deepSeekWSReplayCollector{maxBytes: s.deepSeekWSReplayMaxBytes()},
+	}
 	var protocolErr error
 	var cyberMark *CyberPolicyMark
 	defer func() {
@@ -1141,7 +1172,6 @@ func (s *OpenAIGatewayService) readDeepSeekWSResponsesSSE(
 			ms := int(time.Since(startTime).Milliseconds())
 			state.firstTokenMs = &ms
 		}
-		state.outputItems = collectDeepSeekWSOutputItems(eventType, message, state.outputItems)
 		if openAIWSEventShouldParseUsage(eventType) {
 			parseOpenAIWSResponseUsageFromCompletedEvent(message, &state.usage)
 		}
@@ -1151,6 +1181,9 @@ func (s *OpenAIGatewayService) readDeepSeekWSResponsesSSE(
 			if !deepSeekWSTerminalStatusMatches(eventType, gjson.GetBytes(message, "response.status").String()) {
 				setProtocolErr(errors.New("DeepSeek Responses WebSocket bridge terminal type and status do not match"))
 			}
+		}
+		if err := state.replay.observe(eventType, message); err != nil {
+			return newDeepSeekWSReplayLimitCloseError(err)
 		}
 		if err := sensitiveGuard.writeOrHold(message, eventType, emit); err != nil {
 			if errors.Is(err, errDeepSeekWSSensitiveDelta) {
@@ -1510,8 +1543,8 @@ func (s *OpenAIGatewayService) ForwardDeepSeekResponsesWebSocketTurn(
 		FirstTokenMs:                  state.firstTokenMs,
 	}
 	ensureDeepSeekWSUsageRequestID(c, result, turn)
-	if len(state.outputItems) > 0 {
-		result.wsReplayInput = cloneOpenAIWSRawMessages(state.outputItems)
+	if len(state.replay.items) > 0 {
+		result.wsReplayInput = state.replay.items
 		result.wsReplayInputExists = true
 	}
 	if streamErr == nil {

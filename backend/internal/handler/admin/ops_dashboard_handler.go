@@ -225,11 +225,6 @@ func (h *OpsHandler) GetDashboardTokenStats(c *gin.Context) {
 	h.getDashboardTokenStats(c)
 }
 
-// GetDashboardOpenAITokenStats keeps the legacy route as an alias for rolling clients.
-func (h *OpsHandler) GetDashboardOpenAITokenStats(c *gin.Context) {
-	h.getDashboardTokenStats(c)
-}
-
 func (h *OpsHandler) getDashboardTokenStats(c *gin.Context) {
 	if h.opsService == nil {
 		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")

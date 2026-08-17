@@ -138,9 +138,7 @@ func TestCompositeDeepSeekDispatchesEachProtocolToItsNativeHandler(t *testing.T)
 	gin.SetMode(gin.TestMode)
 	resolver := service.NewCompositeRouteResolver(compositeRouteRepoStub{
 		routes: []service.CompositeModelRoute{
-			{ID: 1, GroupID: 1, PublicModel: "deepseek-alias", MatchType: service.CompositeRouteMatchExact, TargetPlatform: service.PlatformDeepSeek, UpstreamModel: "deepseek-v4-pro", Endpoint: service.CompositeRouteEndpointChatCompletions, Priority: 100, Enabled: true},
-			{ID: 2, GroupID: 1, PublicModel: "deepseek-alias", MatchType: service.CompositeRouteMatchExact, TargetPlatform: service.PlatformDeepSeek, UpstreamModel: "deepseek-v4-pro", Endpoint: service.CompositeRouteEndpointResponses, Priority: 100, Enabled: true},
-			{ID: 3, GroupID: 1, PublicModel: "deepseek-alias", MatchType: service.CompositeRouteMatchExact, TargetPlatform: service.PlatformDeepSeek, UpstreamModel: "deepseek-v4-pro", Endpoint: service.CompositeRouteEndpointMessages, Priority: 100, Enabled: true},
+			{ID: 1, GroupID: 1, PublicModel: "deepseek-alias", MatchType: service.CompositeRouteMatchExact, TargetPlatform: service.PlatformDeepSeek, UpstreamModel: "deepseek-v4-pro", Endpoint: service.CompositeRouteEndpointAny, Priority: 100, Enabled: true},
 		},
 	})
 	router := gin.New()
@@ -308,4 +306,43 @@ func TestCompositeGeminiTargetPlatformMiddlewareUsesPathRoute(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusNoContent, w.Code)
+}
+
+func TestCompositeGeminiTargetPlatformMiddlewareRejectsDeepSeekAny(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	resolver := service.NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []service.CompositeModelRoute{{
+			ID:             1,
+			GroupID:        1,
+			PublicModel:    "company-model",
+			MatchType:      service.CompositeRouteMatchExact,
+			TargetPlatform: service.PlatformDeepSeek,
+			UpstreamModel:  "deepseek-v4-pro",
+			Endpoint:       service.CompositeRouteEndpointAny,
+			Priority:       100,
+			Enabled:        true,
+		}},
+	})
+	router.Use(gin.HandlerFunc(servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+		groupID := int64(1)
+		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
+			GroupID: &groupID,
+			Group:   &service.Group{ID: groupID, Platform: service.PlatformComposite},
+		})
+		c.Next()
+	})))
+	router.Use(compositeGeminiTargetPlatformMiddleware(resolver))
+	router.POST("/v1beta/models/*modelAction", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/company-model:generateContent", strings.NewReader(`{"contents":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusNotFound, w.Code)
+	require.Contains(t, w.Body.String(), "gemini is not supported for this platform")
 }
