@@ -311,6 +311,10 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	if err != nil {
 		return nil, fmt.Errorf("normalize duplicate account extra: %w", err)
 	}
+	accountExtra, err = normalizeUserIsolationExtra(input.Platform, input.Type, accountExtra, "")
+	if err != nil {
+		return nil, fmt.Errorf("normalize duplicate account extra: %w", err)
+	}
 	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
@@ -396,6 +400,116 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 	return normalized, nil
 }
 
+func isUserIsolationAccount(platform, accountType string) bool {
+	return platform == PlatformDeepseek && accountType == AccountTypeAPIKey
+}
+
+func normalizeUserIsolationMode(raw any) (string, error) {
+	value, ok := raw.(string)
+	if !ok {
+		return "", infraerrors.BadRequest(
+			"USER_ISOLATION_MODE_INVALID",
+			"user_isolation_mode must be off or authenticated_user",
+		)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case UserIsolationModeOff:
+		return UserIsolationModeOff, nil
+	case UserIsolationModeAuthenticatedUser:
+		return UserIsolationModeAuthenticatedUser, nil
+	default:
+		return "", infraerrors.BadRequest(
+			"USER_ISOLATION_MODE_INVALID",
+			"user_isolation_mode must be off or authenticated_user",
+		)
+	}
+}
+
+// normalizeUserIsolationExtra normalizes the provider-owned user isolation
+// setting without changing unrelated extra keys. defaultMode is only used by
+// account creation; an empty defaultMode deliberately keeps a missing value
+// missing for updates and duplicates so legacy accounts remain effectively off.
+func normalizeUserIsolationExtra(platform, accountType string, extra map[string]any, defaultMode string) (map[string]any, error) {
+	if !isUserIsolationAccount(platform, accountType) {
+		if extra == nil {
+			return nil, nil
+		}
+		if _, exists := extra[UserIsolationExtraKey]; !exists {
+			return extra, nil
+		}
+		normalized := maps.Clone(extra)
+		delete(normalized, UserIsolationExtraKey)
+		return normalized, nil
+	}
+
+	if extra == nil {
+		if defaultMode == "" {
+			return nil, nil
+		}
+		return map[string]any{UserIsolationExtraKey: defaultMode}, nil
+	}
+
+	raw, exists := extra[UserIsolationExtraKey]
+	if !exists {
+		if defaultMode == "" {
+			return extra, nil
+		}
+		normalized := maps.Clone(extra)
+		normalized[UserIsolationExtraKey] = defaultMode
+		return normalized, nil
+	}
+
+	mode, err := normalizeUserIsolationMode(raw)
+	if err != nil {
+		return nil, err
+	}
+	if raw == mode {
+		return extra, nil
+	}
+	normalized := maps.Clone(extra)
+	normalized[UserIsolationExtraKey] = mode
+	return normalized, nil
+}
+
+func normalizeUserIsolationUpdateExtra(account *Account, input *UpdateAccountInput, normalized map[string]any) (map[string]any, error) {
+	if account == nil || input == nil {
+		return nil, infraerrors.BadRequest("INVALID_ACCOUNT_INPUT", "account update input is required")
+	}
+
+	effectiveType := account.Type
+	if input.Type != "" {
+		effectiveType = input.Type
+	}
+	normalized, err := normalizeUserIsolationExtra(account.Platform, effectiveType, normalized, "")
+	if err != nil {
+		return nil, err
+	}
+	if !isUserIsolationAccount(account.Platform, effectiveType) || input.Extra == nil {
+		return normalized, nil
+	}
+
+	if _, provided := input.Extra[UserIsolationExtraKey]; provided {
+		return normalized, nil
+	}
+	if !isUserIsolationAccount(account.Platform, account.Type) {
+		return normalized, nil
+	}
+
+	if current, ok := account.Extra[UserIsolationExtraKey]; ok {
+		mode, modeErr := normalizeUserIsolationMode(current)
+		if modeErr == nil {
+			if normalized == nil {
+				normalized = make(map[string]any)
+			} else {
+				normalized = maps.Clone(normalized)
+			}
+			normalized[UserIsolationExtraKey] = mode
+		}
+	}
+	return normalized, nil
+}
+
 // Grok media eligibility helpers live in account_grok_media_eligibility.go.
 
 func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
@@ -467,6 +581,10 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		return nil, err
 	}
 	accountExtra, err = normalizeGrokMediaEligibilityExtra(input.Platform, accountExtra)
+	if err != nil {
+		return nil, err
+	}
+	accountExtra, err = normalizeUserIsolationExtra(input.Platform, input.Type, accountExtra, UserIsolationModeAuthenticatedUser)
 	if err != nil {
 		return nil, err
 	}
@@ -549,6 +667,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if err != nil {
 		return nil, err
 	}
+	wasUserIsolationAccount := isUserIsolationAccount(account.Platform, account.Type)
 	var normalizedExtra map[string]any
 	if input.Extra != nil {
 		normalizedExtra, err = normalizeOpenAILongContextBillingUpdateExtra(account, input)
@@ -556,6 +675,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			return nil, err
 		}
 		normalizedExtra, err = normalizeGrokMediaEligibilityUpdateExtra(account, input, normalizedExtra)
+		if err != nil {
+			return nil, err
+		}
+		normalizedExtra, err = normalizeUserIsolationUpdateExtra(account, input, normalizedExtra)
 		if err != nil {
 			return nil, err
 		}
@@ -675,6 +798,22 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		NormalizeFixedQuotaWindows(account.Extra)
 	}
 	if input.Extra == nil {
+		if !isUserIsolationAccount(account.Platform, account.Type) {
+			account.Extra, err = normalizeUserIsolationExtra(account.Platform, account.Type, account.Extra, "")
+			if err != nil {
+				return nil, err
+			}
+		} else if input.Type != "" && !wasUserIsolationAccount {
+			if account.Extra != nil {
+				account.Extra = maps.Clone(account.Extra)
+				delete(account.Extra, UserIsolationExtraKey)
+			}
+		} else {
+			account.Extra, err = normalizeUserIsolationExtra(account.Platform, account.Type, account.Extra, "")
+			if err != nil {
+				return nil, err
+			}
+		}
 		account.Extra = prepareCodexFingerprintExtraForUpdate(account, account.Extra)
 	}
 	if requestedRateSyncEnabledUpdate != nil && *requestedRateSyncEnabledUpdate {
