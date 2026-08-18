@@ -884,6 +884,7 @@ export interface UpdateGroupRequest {
 
 export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
+export type UserIsolationMode = 'off' | 'authenticated_user'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
 
@@ -1127,6 +1128,7 @@ export interface Account {
     upstream_billing_probe_enabled?: boolean
     upstream_billing_rate_sync_enabled?: boolean
     upstream_billing_probe?: UpstreamBillingProbeSnapshot
+    user_isolation_mode?: UserIsolationMode
     codex_reset_credit_snapshot?: {
       available_count?: number
       credits?: { expires_at?: string }[]

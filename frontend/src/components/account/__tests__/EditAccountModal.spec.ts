@@ -166,6 +166,21 @@ function buildAccount() {
   } as any
 }
 
+function buildDeepSeekAccount(extra: Record<string, unknown> = {}) {
+  const account = buildAccount()
+  return {
+    ...account,
+    name: 'DeepSeek Key',
+    platform: 'deepseek',
+    type: 'apikey',
+    credentials: {
+      api_key: 'sk-deepseek',
+      base_url: 'https://api.deepseek.com'
+    },
+    extra
+  } as any
+}
+
 function buildOpenAISparkShadowAccount() {
   const account = buildAccount()
   return {
@@ -1138,6 +1153,66 @@ describe('EditAccountModal', () => {
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).not.toHaveBeenCalled()
+  })
+
+  it('shows DeepSeek user isolation and treats a missing legacy value as off', async () => {
+    const account = buildDeepSeekAccount({ preserved_setting: 'keep' })
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    const isolationSelect = wrapper.get<HTMLSelectElement>('[data-testid="edit-user-isolation-mode"]')
+    expect(isolationSelect.element.value).toBe('off')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.user_isolation_mode).toBe('off')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.preserved_setting).toBe('keep')
+  })
+
+  it('updates DeepSeek user isolation without dropping existing extra fields', async () => {
+    const account = buildDeepSeekAccount({
+      user_isolation_mode: 'authenticated_user',
+      preserved_setting: 'keep'
+    })
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    const isolationSelect = wrapper.get<HTMLSelectElement>('[data-testid="edit-user-isolation-mode"]')
+    expect(isolationSelect.element.value).toBe('authenticated_user')
+    await isolationSelect.setValue('off')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.user_isolation_mode).toBe('off')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.preserved_setting).toBe('keep')
+  })
+
+  it('does not render or submit user isolation for non-DeepSeek accounts', async () => {
+    const account = buildAccount()
+    account.extra = {
+      user_isolation_mode: 'authenticated_user',
+      preserved_setting: 'keep'
+    }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    expect(wrapper.find('[data-testid="edit-user-isolation-mode-section"]').exists()).toBe(false)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('user_isolation_mode')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.preserved_setting).toBe('keep')
   })
 
   it('loads and submits Antigravity configured project fallback', async () => {

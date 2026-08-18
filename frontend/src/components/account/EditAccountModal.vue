@@ -129,6 +129,29 @@
           <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
         </div>
 
+        <!-- DeepSeek API Key user isolation -->
+        <div
+          v-if="isDeepSeekApiKeyAccount"
+          class="border-t border-gray-200 pt-4 dark:border-dark-600"
+          data-testid="edit-user-isolation-mode-section"
+        >
+          <label class="input-label" for="edit-user-isolation-mode">
+            {{ t('admin.accounts.userIsolationMode.title') }}
+          </label>
+          <select
+            id="edit-user-isolation-mode"
+            v-model="userIsolationMode"
+            class="input"
+            data-testid="edit-user-isolation-mode"
+          >
+            <option value="authenticated_user">
+              {{ t('admin.accounts.userIsolationMode.authenticatedUser') }}
+            </option>
+            <option value="off">{{ t('admin.accounts.userIsolationMode.off') }}</option>
+          </select>
+          <p class="input-hint">{{ t('admin.accounts.userIsolationMode.description') }}</p>
+        </div>
+
         <!-- Model Restriction Section (不适用于 Antigravity) -->
         <div v-if="account.platform !== 'antigravity'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
           <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
@@ -2775,7 +2798,8 @@ import type {
   OpenAICompactMode,
   OpenAIResponsesMode,
   OpenAIEndpointCapability,
-  OllamaCloudUsageState
+  OllamaCloudUsageState,
+  UserIsolationMode
 } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -2884,6 +2908,7 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+const userIsolationMode = ref<UserIsolationMode>('off')
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）account_mode / api_protocol 编辑 ──
 // account_mode 决定额度/余额监控路径，api_protocol 决定转发端点与格式；
@@ -2894,6 +2919,9 @@ const isCNApiKeyAccount = computed(
     (props.account.platform === 'kimi' ||
       props.account.platform === 'zhipu' ||
       props.account.platform === 'deepseek')
+)
+const isDeepSeekApiKeyAccount = computed(
+  () => props.account?.platform === 'deepseek' && props.account?.type === 'apikey'
 )
 // CnBaseUrlPresets 的 platform prop 是平台字面量联合类型，模板里不能写
 // `as` 断言（其中的 `|` 会被 eslint 误判为 Vue2 filter 语法），经此 computed 传递。
@@ -3560,6 +3588,11 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 	const extra = newAccount.extra as Record<string, unknown> | undefined
 	mixedScheduling.value = extra?.mixed_scheduling === true
 	allowOverages.value = extra?.allow_overages === true
+	userIsolationMode.value =
+	  newAccount.platform === 'deepseek' && newAccount.type === 'apikey' &&
+	  extra?.user_isolation_mode === 'authenticated_user'
+	    ? 'authenticated_user'
+	    : 'off'
 	autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
 	autoPause7dThreshold.value = typeof extra?.auto_pause_7d_threshold === 'number' ? extra.auto_pause_7d_threshold * 100 : null
 	autoPause5hDisabled.value = extra?.auto_pause_5h_disabled === true
@@ -5077,6 +5110,22 @@ const handleSubmit = async () => {
       // Quota notify config
       writeQuotaNotifyToExtra(newExtra, 'update')
       updatePayload.extra = newExtra
+    }
+
+    // User isolation is currently exposed only for DeepSeek API Key accounts.
+    // Merge from the original extra so unrelated settings survive the edit;
+    // remove the field from every other platform/type before submitting.
+    const pendingExtra = updatePayload.extra as Record<string, unknown> | undefined
+    if (isDeepSeekApiKeyAccount.value) {
+      updatePayload.extra = {
+        ...((props.account.extra as Record<string, unknown>) || {}),
+        ...(pendingExtra || {}),
+        user_isolation_mode: userIsolationMode.value
+      }
+    } else if (pendingExtra && Object.prototype.hasOwnProperty.call(pendingExtra, 'user_isolation_mode')) {
+      const sanitizedExtra = { ...pendingExtra }
+      delete sanitizedExtra.user_isolation_mode
+      updatePayload.extra = sanitizedExtra
     }
 
     const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {

@@ -1286,6 +1286,29 @@
           <p v-if="apiKeyHint" class="input-hint">{{ apiKeyHint }}</p>
         </div>
 
+        <!-- DeepSeek API Key user isolation -->
+        <div
+          v-if="form.platform === 'deepseek'"
+          class="border-t border-gray-200 pt-4 dark:border-dark-600"
+          data-testid="create-user-isolation-mode-section"
+        >
+          <label class="input-label" for="create-user-isolation-mode">
+            {{ t('admin.accounts.userIsolationMode.title') }}
+          </label>
+          <select
+            id="create-user-isolation-mode"
+            v-model="userIsolationMode"
+            class="input"
+            data-testid="create-user-isolation-mode"
+          >
+            <option value="authenticated_user">
+              {{ t('admin.accounts.userIsolationMode.authenticatedUser') }}
+            </option>
+            <option value="off">{{ t('admin.accounts.userIsolationMode.off') }}</option>
+          </select>
+          <p class="input-hint">{{ t('admin.accounts.userIsolationMode.description') }}</p>
+        </div>
+
         <!-- 上游倍率自动探测：全部 API-key 平台可用（所在区块已限定 apikey 类型） -->
         <div
           class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
@@ -3724,7 +3747,8 @@ import type {
   CodexSessionImportMessage,
   OpenAICompactMode,
   OpenAIResponsesMode,
-  OpenAIEndpointCapability
+  OpenAIEndpointCapability,
+  UserIsolationMode
 } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -3924,6 +3948,7 @@ const upstreamBillingAutoProbeEnabled = ref(true)
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）账号类型、API 协议与端点 ──
 const accountMode = ref<CnAccountMode>('payg')
+const userIsolationMode = ref<UserIsolationMode>('authenticated_user')
 // API 协议决定转发端点与格式：cc=现有转换链，anthropic=原生直通（Claude Code），
 // responses=deepseek 原生 Responses 端点（Codex）。与账号类型正交。
 const apiProtocol = ref<CnApiProtocol>('chat_completions')
@@ -4496,6 +4521,8 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
+    // 每次切换平台重新使用 DeepSeek 新账号默认值；非 DeepSeek 提交时会被排除。
+    userIsolationMode.value = 'authenticated_user'
     // Reset base URL based on platform
     if (newPlatform === 'kimi' || newPlatform === 'zhipu' || newPlatform === 'deepseek') {
       apiKeyBaseUrl.value = defaultCNBaseUrl(newPlatform, accountMode.value, apiProtocol.value)
@@ -4950,6 +4977,7 @@ const resetForm = () => {
   accountCategory.value = 'oauth-based'
   addMethod.value = 'oauth'
   accountMode.value = 'payg'
+  userIsolationMode.value = 'authenticated_user'
   apiProtocol.value = 'chat_completions'
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
@@ -5048,6 +5076,20 @@ const handleClose = () => {
   antigravityMixedChannelConfirmed.value = false
   clearMixedChannelDialog()
   emit('close')
+}
+
+const buildUserIsolationExtra = (
+  platform: AccountPlatform,
+  type: AccountType,
+  base?: Record<string, unknown>
+): Record<string, unknown> | undefined => {
+  const extra: Record<string, unknown> = { ...(base || {}) }
+  if (platform === 'deepseek' && type === 'apikey') {
+    extra.user_isolation_mode = userIsolationMode.value
+  } else {
+    delete extra.user_isolation_mode
+  }
+  return Object.keys(extra).length > 0 ? extra : undefined
 }
 
 const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknown> | undefined => {
@@ -5159,13 +5201,20 @@ const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unk
 
 // Helper function to create account with mixed channel warning handling
 const doCreateAccount = async (payload: CreateAccountRequest) => {
+  const normalizedPayload: CreateAccountRequest = { ...payload }
+  const normalizedExtra = buildUserIsolationExtra(payload.platform, payload.type, payload.extra)
+  if (normalizedExtra) {
+    normalizedPayload.extra = normalizedExtra
+  } else {
+    delete normalizedPayload.extra
+  }
   const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
-    await submitCreateAccount(payload)
+    await submitCreateAccount(normalizedPayload)
   })
   if (!canContinue) {
     return
   }
-  await submitCreateAccount(payload)
+  await submitCreateAccount(normalizedPayload)
 }
 
 // Handle mixed channel warning confirmation

@@ -90,6 +90,12 @@ export default {
       oauthType: 'OAuth',
       setupToken: 'Setup Token',
       apiKey: 'API Key',
+      userIsolationMode: {
+        title: 'User isolation',
+        description: 'Generate a separate DeepSeek upstream identity for each authenticated user.',
+        off: 'Off',
+        authenticatedUser: 'Authenticated user'
+      },
       // Schedulable toggle
       schedulable: 'Schedulable',
       schedulableHint: 'Enable to include this account in API request scheduling',

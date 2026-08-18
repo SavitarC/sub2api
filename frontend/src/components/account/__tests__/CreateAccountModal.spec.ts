@@ -254,6 +254,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
     expect(createAccountMock).toHaveBeenCalledTimes(1)
     expect(createAccountMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBeUndefined()
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.user_isolation_mode).toBeUndefined()
     // 上游倍率探测已放宽到全部 API-key 平台：非 OpenAI 平台与 OpenAI 一致，默认开启。
     expect(createAccountMock.mock.calls[0]?.[0]?.upstream_billing_probe_enabled).toBe(true)
   })
@@ -337,5 +338,46 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await flushPromises()
 
     expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
+  })
+
+  it('shows user isolation only for DeepSeek API Key accounts with the new default', async () => {
+    const wrapper = mountModal()
+
+    expect(wrapper.find('[data-testid="create-user-isolation-mode-section"]').exists()).toBe(false)
+
+    await selectButtonByText(wrapper, 'DeepSeek')
+
+    const isolationSelect = wrapper.get<HTMLSelectElement>('[data-testid="create-user-isolation-mode"]')
+    expect(isolationSelect.element.value).toBe('authenticated_user')
+
+    await selectButtonByText(wrapper, 'OpenAI')
+    expect(wrapper.find('[data-testid="create-user-isolation-mode-section"]').exists()).toBe(false)
+  })
+
+  it('submits the selected DeepSeek user isolation mode', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'DeepSeek')
+    await wrapper.get<HTMLSelectElement>('[data-testid="create-user-isolation-mode"]').setValue('off')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('DeepSeek account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('deepseek-api-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.platform).toBe('deepseek')
+    expect(createAccountMock.mock.calls[0]?.[0]?.type).toBe('apikey')
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.user_isolation_mode).toBe('off')
+  })
+
+  it('submits authenticated_user by default for a new DeepSeek API Key account', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'DeepSeek')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('DeepSeek account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('deepseek-api-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.user_isolation_mode).toBe('authenticated_user')
   })
 })

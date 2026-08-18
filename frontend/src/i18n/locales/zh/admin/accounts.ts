@@ -298,6 +298,12 @@ export default {
       rateLimitCleared: '速率限制已清除',
       setupToken: 'Setup Token',
       apiKey: 'API Key',
+      userIsolationMode: {
+        title: '用户隔离',
+        description: '为每个认证用户生成独立的 DeepSeek 上游身份。',
+        off: '关闭',
+        authenticatedUser: '按认证用户隔离'
+      },
       deleteConfirm: "确定要删除账号 '{name}' 吗？此操作无法撤销。",
       failedToClearRateLimit: '清除速率限制失败',
       platforms: {
