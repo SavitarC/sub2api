@@ -220,6 +220,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				normalized = capped
 			}
 		}
+		requestedReasoningEffort := extractWireReasoningEffort(normalized, UpstreamProtocolResponses)
 
 		originalModel := strings.TrimSpace(values[1].String())
 		modelMissing := originalModel == ""
@@ -393,6 +394,17 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 		normalized = policyApplied
+		processed, processErr := s.processUpstreamRequestWithoutPolicy(ctx, UpstreamRequest{
+			Account:                  account,
+			Protocol:                 UpstreamProtocolResponses,
+			Model:                    upstreamModel,
+			Body:                     normalized,
+			RequestedReasoningEffort: requestedReasoningEffort,
+		})
+		if processErr != nil {
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", processErr)
+		}
+		normalized = processed.Body
 		ingressSessionOriginalModel = originalModel
 
 		return openAIWSClientPayload{

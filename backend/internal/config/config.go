@@ -881,6 +881,10 @@ const (
 
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
+	// UserIsolation controls optional per-user identity derivation for providers
+	// that support an upstream user field. The secret is never sent upstream;
+	// it is used as the HMAC key for the derived stable identifier.
+	UserIsolation GatewayUserIsolationConfig `mapstructure:"user_isolation"`
 	// 等待上游响应头的超时时间（秒），0表示无超时
 	// 注意：这不影响流式数据传输，只控制等待响应头的时间
 	ResponseHeaderTimeout int `mapstructure:"response_header_timeout"`
@@ -1029,6 +1033,13 @@ type GatewayConfig struct {
 	// CNProviders: 国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）的余额检测配置。
 	// 仅作用于 payg（按量付费）账号：周期探测余额，低于阈值则临时停调。
 	CNProviders GatewayCNProvidersConfig `mapstructure:"cn_providers"`
+}
+
+// GatewayUserIsolationConfig configures the secret used to derive stable,
+// provider-scoped upstream user identifiers. An empty secret derives an
+// independent key from jwt.secret at runtime.
+type GatewayUserIsolationConfig struct {
+	Secret string `mapstructure:"secret"`
 }
 
 // GatewayGrokConfig holds Grok-specific gateway scheduling knobs.
@@ -2289,6 +2300,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.force_codex_cli", false)
+	viper.SetDefault("gateway.user_isolation.secret", "")
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)

@@ -25,6 +25,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	startTime := time.Now()
 	// 固定渠道映射后的请求级 canonical body；账号 normalize/strip 不得改写跨 failover hint。
 	canonicalImageIntentBody := body
+	requestedReasoningEffort := extractWireReasoningEffort(body, UpstreamProtocolResponses)
+	if requestedReasoningEffort == "" {
+		if derived := extractOpenAIReasoningEffortFromBody(body, gjson.GetBytes(body, "model").String()); derived != nil {
+			requestedReasoningEffort = *derived
+		}
+	}
 
 	restrictionResult := s.detectCodexClientRestriction(c, account, body)
 	apiKeyID := getAPIKeyIDFromContext(c)
@@ -511,28 +517,35 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
-	if rawTier := requestView.ServiceTier; rawTier != "" {
-		if normTier := normalizedOpenAIServiceTierValue(rawTier); normTier != "" {
-			action, errMsg := s.evaluateOpenAIFastPolicy(ctx, account, upstreamModel, normTier)
-			switch action {
-			case BetaPolicyActionBlock:
-				msg := errMsg
-				if msg == "" {
-					msg = fmt.Sprintf("openai service_tier=%s is not allowed for model %s", normTier, upstreamModel)
-				}
-				blocked := &OpenAIFastBlockedError{Message: msg}
-				writeOpenAIFastPolicyBlockedResponse(c, blocked)
-				return nil, blocked
-			case BetaPolicyActionFilter:
+	rawTier := requestView.ServiceTier
+	normTier := normalizedOpenAIServiceTierValue(rawTier)
+	if rawTier == "" || normTier != "" {
+		action, errMsg := s.evaluateOpenAIFastPolicy(ctx, account, upstreamModel, normTier)
+		switch action {
+		case BetaPolicyActionBlock:
+			// A rule scoped to all tiers may still force a missing tier, but
+			// filter/block rules only govern an explicitly supplied tier.
+			if rawTier == "" {
+				break
+			}
+			msg := errMsg
+			if msg == "" {
+				msg = fmt.Sprintf("openai service_tier=%s is not allowed for model %s", normTier, upstreamModel)
+			}
+			blocked := &OpenAIFastBlockedError{Message: msg}
+			writeOpenAIFastPolicyBlockedResponse(c, blocked)
+			return nil, blocked
+		case BetaPolicyActionFilter:
+			if rawTier != "" {
 				markPatchDelete("service_tier")
-			case OpenAIFastPolicyActionForcePriority:
-				if rawTier != OpenAIFastTierPriority {
-					markPatchSet("service_tier", OpenAIFastTierPriority)
-				}
-			default:
-				if normTier != rawTier {
-					markPatchSet("service_tier", normTier)
-				}
+			}
+		case OpenAIFastPolicyActionForcePriority:
+			if rawTier != OpenAIFastTierPriority {
+				markPatchSet("service_tier", OpenAIFastTierPriority)
+			}
+		default:
+			if rawTier != "" && normTier != rawTier {
+				markPatchSet("service_tier", normTier)
 			}
 		}
 	}
@@ -809,9 +822,26 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, wsErr
 	}
 
-	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
-	// 国产模型默认 effort 补充：此处 reqModel 已被 mapping 重写为 billingModel。
-	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, reqModel)
+	if requestedReasoningEffort == "" {
+		effectiveReasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
+		effectiveReasoningEffort = ApplyThinkingEnabledFallback(effectiveReasoningEffort, body, reqModel)
+		if effectiveReasoningEffort != nil {
+			requestedReasoningEffort = *effectiveReasoningEffort
+		}
+	}
+
+	processed, processErr := s.processUpstreamRequestWithoutPolicy(ctx, UpstreamRequest{
+		Account:                  account,
+		Protocol:                 UpstreamProtocolResponses,
+		Model:                    upstreamModel,
+		Body:                     body,
+		RequestedReasoningEffort: requestedReasoningEffort,
+	})
+	if processErr != nil {
+		return nil, processErr
+	}
+	body = processed.Body
+	reasoningEffort := processed.ReasoningEffort
 	reasoningEffortValue := ""
 	if reasoningEffort != nil {
 		reasoningEffortValue = *reasoningEffort

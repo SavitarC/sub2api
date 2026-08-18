@@ -62,6 +62,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 		return nil, fmt.Errorf("missing model in request")
 	}
 	clientStream := responsesReq.Stream
+	requestedReasoningEffort := extractWireReasoningEffort(body, UpstreamProtocolResponses)
 
 	// 3. Convert Responses → Anthropic
 	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
@@ -77,6 +78,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 
 	reasoningEffort := ExtractResponsesReasoningEffortFromBody(body)
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
+	if requestedReasoningEffort == "" && reasoningEffort != nil {
+		requestedReasoningEffort = *reasoningEffort
+	}
 
 	// 5. Force upstream streaming（客户端原始终决定响应格式；
 	// 上游恒为流式，非流式由缓冲路径组装）。
@@ -100,6 +104,22 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	anthropicBody = StripEmptyTextBlocks(anthropicBody)
 	anthropicBody = FilterWebSearchHistoryBlocks(anthropicBody, upstreamModel)
 	anthropicBody = enforceCacheControlLimit(anthropicBody)
+	processed, err := s.processUpstreamRequest(ctx, UpstreamRequest{
+		Account:                  account,
+		Protocol:                 UpstreamProtocolAnthropic,
+		Model:                    upstreamModel,
+		Body:                     anthropicBody,
+		RequestedReasoningEffort: requestedReasoningEffort,
+	})
+	if err != nil {
+		var blocked *OpenAIFastBlockedError
+		if errors.As(err, &blocked) {
+			writeOpenAIFastPolicyBlockedResponse(c, blocked)
+		}
+		return nil, err
+	}
+	anthropicBody = processed.Body
+	reasoningEffort = processed.ReasoningEffort
 
 	apiKey := strings.TrimSpace(account.GetOpenAIProtocolAPIKey())
 	if apiKey == "" {

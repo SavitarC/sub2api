@@ -102,6 +102,10 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	startTime := time.Now()
+	requestedReasoningEffort := extractWireReasoningEffort(body, UpstreamProtocolChatCompletions)
+	if requestedReasoningEffort == "" {
+		requestedReasoningEffort = extractWireReasoningEffort(body, UpstreamProtocolResponses)
+	}
 
 	// 1. Parse Chat Completions request
 	var chatReq apicompat.ChatCompletionsRequest
@@ -244,8 +248,15 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		}
 	}
 
-	// 4b. Apply OpenAI fast policy (may filter service_tier or block the request).
-	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, responsesBody)
+	// 4b. Apply the shared final upstream processor (provider normalization,
+	// fast/flex policy, and optional user isolation).
+	processed, policyErr := s.processUpstreamRequest(ctx, UpstreamRequest{
+		Account:                  account,
+		Protocol:                 UpstreamProtocolResponses,
+		Model:                    upstreamModel,
+		Body:                     responsesBody,
+		RequestedReasoningEffort: requestedReasoningEffort,
+	})
 	if policyErr != nil {
 		var blocked *OpenAIFastBlockedError
 		if errors.As(policyErr, &blocked) {
@@ -254,7 +265,17 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		}
 		return nil, policyErr
 	}
-	responsesBody = updatedBody
+	responsesBody = processed.Body
+	responsesReq.ServiceTier = ""
+	if processed.ServiceTier != nil {
+		responsesReq.ServiceTier = *processed.ServiceTier
+	}
+	if processed.ReasoningEffort != nil {
+		if responsesReq.Reasoning == nil {
+			responsesReq.Reasoning = &apicompat.ResponsesReasoning{}
+		}
+		responsesReq.Reasoning.Effort = *processed.ReasoningEffort
+	}
 
 	// 5. Get access token
 	token, _, err := s.GetAccessToken(ctx, account)

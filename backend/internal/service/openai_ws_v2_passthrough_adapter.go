@@ -138,6 +138,7 @@ type openAIWSPassthroughUsageMeta struct {
 	reasoningEffort atomic.Pointer[string]
 	requestModel    atomic.Pointer[string]
 	upstreamModel   atomic.Pointer[string]
+	account         *Account
 
 	// 仅在 client->upstream filter goroutine 中读写；Load 侧通过上方原子指针同步。
 	sessionRequestModel string
@@ -158,7 +159,7 @@ func (m *openAIWSPassthroughUsageMeta) initFromFirstFrame(policyOutput []byte, m
 		return
 	}
 	m.serviceTier.Store(extractOpenAIServiceTierFromBody(policyOutput))
-	m.reasoningEffort.Store(extractOpenAIReasoningEffortFromBody(policyOutput, mappedModel, m.sessionRequestModel))
+	m.reasoningEffort.Store(m.reasoningEffortFromPayload(policyOutput, mappedModel, m.sessionRequestModel))
 	m.storeTurnModels(m.sessionRequestModel, policyOutput)
 }
 
@@ -186,8 +187,18 @@ func (m *openAIWSPassthroughUsageMeta) updateFromResponseCreate(policyOutput []b
 		return
 	}
 	m.serviceTier.Store(extractOpenAIServiceTierFromBody(policyOutput))
-	m.reasoningEffort.Store(extractOpenAIReasoningEffortFromBody(policyOutput, mappedModel, requestModelForFrame))
+	m.reasoningEffort.Store(m.reasoningEffortFromPayload(policyOutput, mappedModel, requestModelForFrame))
 	m.storeTurnModels(requestModelForFrame, policyOutput)
+}
+
+func (m *openAIWSPassthroughUsageMeta) reasoningEffortFromPayload(payload []byte, models ...string) *string {
+	if m != nil && m.account != nil && m.account.IsDeepseek() {
+		if effort := normalizeReasoningEffortPreservingMax(extractWireReasoningEffort(payload, UpstreamProtocolResponses)); effort != "" {
+			return &effort
+		}
+		return nil
+	}
+	return extractOpenAIReasoningEffortFromBody(payload, models...)
 }
 
 func (m *openAIWSPassthroughUsageMeta) storeTurnModels(requestModel string, upstreamPayload []byte) {
@@ -730,6 +741,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		firstClientMessage = s.ReplaceModelInBody(firstClientMessage, capturedSessionModel)
 	}
 	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
+	usageMeta.account = account
 	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
 	if policyErr != nil {
 		return fmt.Errorf("apply openai fast policy on first ws frame: %w", policyErr)
@@ -752,6 +764,18 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, blocked.Message, blocked)
 	}
 	firstClientMessage = updatedFirst
+	requestedReasoningEffort := extractWireReasoningEffort(firstClientMessage, UpstreamProtocolResponses)
+	processedFirst, processErr := s.processUpstreamRequestWithoutPolicy(ctx, UpstreamRequest{
+		Account:                  account,
+		Protocol:                 UpstreamProtocolResponses,
+		Model:                    capturedSessionModel,
+		Body:                     firstClientMessage,
+		RequestedReasoningEffort: requestedReasoningEffort,
+	})
+	if processErr != nil {
+		return fmt.Errorf("process openai fast policy first ws frame: %w", processErr)
+	}
+	firstClientMessage = processedFirst.Body
 
 	// 在 policy filter 之后再提取 service_tier / reasoning_effort 用于
 	// usage 上报：filter
@@ -1022,6 +1046,20 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				payload = s.ReplaceModelInBody(payload, model)
 			}
 			out, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, payload)
+			if policyErr == nil && blocked == nil && isResponseCreate {
+				requestedReasoningEffort := extractWireReasoningEffort(out, UpstreamProtocolResponses)
+				processed, processErr := s.processUpstreamRequestWithoutPolicy(ctx, UpstreamRequest{
+					Account:                  account,
+					Protocol:                 UpstreamProtocolResponses,
+					Model:                    model,
+					Body:                     out,
+					RequestedReasoningEffort: requestedReasoningEffort,
+				})
+				if processErr != nil {
+					return payload, nil, processErr
+				}
+				out = processed.Body
+			}
 			// 多轮 passthrough usage：仅在成功（non-block / non-err）
 			// 的 response.create 帧上更新 usageMeta，使用
 			// filter 处理后的 payload，与首帧 policy-after-extract 语义

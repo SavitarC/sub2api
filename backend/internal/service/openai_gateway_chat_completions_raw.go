@@ -69,8 +69,10 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 	clientStream := gjson.GetBytes(body, "stream").Bool()
 
-	// 1b. Extract service tier from the raw body before any transformation.
-	serviceTier := extractOpenAIServiceTierFromBody(body)
+	// Preserve the client spelling before compatibility normalization. DeepSeek
+	// accepts max on the wire while generic OpenAI normalization uses xhigh.
+	requestedReasoningEffort := extractWireReasoningEffort(body, UpstreamProtocolChatCompletions)
+	var serviceTier *string
 
 	// 2. Resolve model mapping (same as ForwardAsChatCompletions)
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
@@ -84,6 +86,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
 	// 国产模型默认 effort 补充：需要 mappedModel 判定，推迟到 billingModel 算出之后。
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
+	if requestedReasoningEffort == "" && reasoningEffort != nil {
+		requestedReasoningEffort = *reasoningEffort
+	}
 
 	// 3. Rewrite model in body (no protocol conversion)
 	upstreamBody := body
@@ -94,8 +99,15 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		upstreamBody = normalizedBody
 	}
 
-	// 4. Apply OpenAI fast policy on the CC body
-	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, upstreamBody)
+	// 4. Apply the shared final upstream processor. It owns fast/flex policy,
+	// provider normalization, and optional user isolation.
+	processed, policyErr := s.processUpstreamRequest(ctx, UpstreamRequest{
+		Account:                  account,
+		Protocol:                 UpstreamProtocolChatCompletions,
+		Model:                    upstreamModel,
+		Body:                     upstreamBody,
+		RequestedReasoningEffort: requestedReasoningEffort,
+	})
 	if policyErr != nil {
 		var blocked *OpenAIFastBlockedError
 		if errors.As(policyErr, &blocked) {
@@ -104,7 +116,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		}
 		return nil, policyErr
 	}
-	upstreamBody = updatedBody
+	upstreamBody = processed.Body
+	serviceTier = processed.ServiceTier
+	reasoningEffort = processed.ReasoningEffort
 
 	// Grok Composer does not accept image_url parts directly, but Grok Build
 	// can describe the images first. Bridge only this exact failure mode.

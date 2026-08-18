@@ -113,7 +113,11 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		body = sanitizedBody
 	}
 
-	// Apply OpenAI fast policy to the passthrough body (filter/block by service_tier).
+	requestedReasoningEffort := extractWireReasoningEffort(body, UpstreamProtocolResponses)
+	if requestedReasoningEffort == "" && reasoningEffort != nil {
+		requestedReasoningEffort = *reasoningEffort
+	}
+	// Apply the shared final upstream processor to the passthrough body.
 	// 统一使用 upstream 视角的 model：透传路径下 body 已经过 compact 映射 +
 	// OAuth normalize，body 中的 model 字段即上游真正会看到的 slug。
 	// 这样可以与 chat-completions / messages / native /responses 入口的
@@ -123,7 +127,13 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	if policyModel == "" {
 		policyModel = reqModel
 	}
-	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, policyModel, body)
+	processed, policyErr := s.processUpstreamRequest(ctx, UpstreamRequest{
+		Account:                  account,
+		Protocol:                 UpstreamProtocolResponses,
+		Model:                    policyModel,
+		Body:                     body,
+		RequestedReasoningEffort: requestedReasoningEffort,
+	})
 	if policyErr != nil {
 		var blocked *OpenAIFastBlockedError
 		if errors.As(policyErr, &blocked) {
@@ -131,7 +141,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 		return nil, policyErr
 	}
-	body = updatedBody
+	body = processed.Body
+	reasoningEffort = processed.ReasoningEffort
 
 	apiKey := getAPIKeyFromContext(c)
 	// 同一 attempt 的最终 model/body 只判定一次，权限检查与后续图片状态设置共用该结果。

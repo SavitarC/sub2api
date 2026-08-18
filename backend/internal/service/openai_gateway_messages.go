@@ -44,6 +44,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	if account.IsAnthropicProtocol() {
 		return s.forwardAnthropicViaNativeAnthropicEndpoint(ctx, c, account, body, defaultMappedModel)
 	}
+	requestedReasoningEffort := extractWireReasoningEffort(body, UpstreamProtocolAnthropic)
 
 	// 入口分流：APIKey 账号 + 上游不支持 Responses API → 走 CC 直转（与
 	// ForwardAsChatCompletions 对称）。缺少此分流时，/v1/messages 入站请求
@@ -267,10 +268,15 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		}
 	}
 
-	// 4c. Apply OpenAI fast policy (may filter service_tier or block the request).
-	// Mirrors the Claude anthropic-beta "fast-mode-2026-02-01" filter, but keyed
-	// on the body-level service_tier field (priority/flex).
-	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, responsesBody)
+	// 4c. Apply the shared final upstream processor (provider normalization,
+	// fast/flex policy, and optional user isolation).
+	processed, policyErr := s.processUpstreamRequest(ctx, UpstreamRequest{
+		Account:                  account,
+		Protocol:                 UpstreamProtocolResponses,
+		Model:                    upstreamModel,
+		Body:                     responsesBody,
+		RequestedReasoningEffort: requestedReasoningEffort,
+	})
 	if policyErr != nil {
 		var blocked *OpenAIFastBlockedError
 		if errors.As(policyErr, &blocked) {
@@ -279,7 +285,17 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		}
 		return nil, policyErr
 	}
-	responsesBody = updatedBody
+	responsesBody = processed.Body
+	responsesReq.ServiceTier = ""
+	if processed.ServiceTier != nil {
+		responsesReq.ServiceTier = *processed.ServiceTier
+	}
+	if processed.ReasoningEffort != nil {
+		if responsesReq.Reasoning == nil {
+			responsesReq.Reasoning = &apicompat.ResponsesReasoning{}
+		}
+		responsesReq.Reasoning.Effort = *processed.ReasoningEffort
+	}
 	grokCacheIdentity := ""
 	if account.Platform == PlatformGrok {
 		grokIntentBody := responsesBody

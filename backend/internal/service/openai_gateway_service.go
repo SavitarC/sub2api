@@ -404,33 +404,34 @@ var ErrNoAvailableCompactAccounts = errors.New("no available accounts support /r
 
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
-	accountRepo           AccountRepository
-	usageLogRepo          UsageLogRepository
-	usageBillingRepo      UsageBillingRepository
-	userRepo              UserRepository
-	userSubRepo           UserSubscriptionRepository
-	cache                 GatewayCache
-	cfg                   *config.Config
-	codexDetector         CodexClientRestrictionDetector
-	schedulerSnapshot     *SchedulerSnapshotService
-	concurrencyService    *ConcurrencyService
-	billingService        *BillingService
-	rateLimitService      *RateLimitService
-	billingCacheService   *BillingCacheService
-	userGroupRateResolver *userGroupRateResolver
-	httpUpstream          HTTPUpstream
-	deferredService       *DeferredService
-	openAITokenProvider   *OpenAITokenProvider
-	grokTokenProvider     *GrokTokenProvider
-	toolCorrector         *CodexToolCorrector
-	openaiWSResolver      OpenAIWSProtocolResolver
-	resolver              *ModelPricingResolver
-	channelService        *ChannelService
-	balanceNotifyService  *BalanceNotifyService
-	settingService        *SettingService
-	userPlatformQuotaRepo UserPlatformQuotaRepository
-	liveAttestation       liveattestation.Provider
-	liveAttestationCipher SecretEncryptor
+	accountRepo              AccountRepository
+	usageLogRepo             UsageLogRepository
+	usageBillingRepo         UsageBillingRepository
+	userRepo                 UserRepository
+	userSubRepo              UserSubscriptionRepository
+	cache                    GatewayCache
+	cfg                      *config.Config
+	codexDetector            CodexClientRestrictionDetector
+	schedulerSnapshot        *SchedulerSnapshotService
+	concurrencyService       *ConcurrencyService
+	billingService           *BillingService
+	rateLimitService         *RateLimitService
+	billingCacheService      *BillingCacheService
+	userGroupRateResolver    *userGroupRateResolver
+	httpUpstream             HTTPUpstream
+	deferredService          *DeferredService
+	openAITokenProvider      *OpenAITokenProvider
+	grokTokenProvider        *GrokTokenProvider
+	toolCorrector            *CodexToolCorrector
+	openaiWSResolver         OpenAIWSProtocolResolver
+	resolver                 *ModelPricingResolver
+	channelService           *ChannelService
+	balanceNotifyService     *BalanceNotifyService
+	settingService           *SettingService
+	userPlatformQuotaRepo    UserPlatformQuotaRepository
+	upstreamRequestProcessor *UpstreamRequestProcessor
+	liveAttestation          liveattestation.Provider
+	liveAttestationCipher    SecretEncryptor
 
 	openaiWSPoolOnce               sync.Once
 	openaiWSStateStoreOnce         sync.Once
@@ -537,6 +538,7 @@ func NewOpenAIGatewayService(
 		codexSnapshotThrottle: newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
 		openaiModelTransient:  newOpenAIAccountModelTransientState(openAIModelTransientDefaultMax),
 	}
+	svc.upstreamRequestProcessor = NewUpstreamRequestProcessor(cfg, svc.applyOpenAIFastPolicyToBody)
 	if rateLimitService != nil {
 		rateLimitService.SetAccountRuntimeBlocker(svc)
 	}

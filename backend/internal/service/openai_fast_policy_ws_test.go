@@ -122,6 +122,36 @@ func TestWSResponseCreate_ForcePriorityRewritesKnownTier(t *testing.T) {
 	}
 }
 
+func TestWSResponseCreate_ForcePriorityInjectsMissingTier(t *testing.T) {
+	settings := &OpenAIFastPolicySettings{
+		Rules: []OpenAIFastPolicyRule{{
+			ServiceTier: OpenAIFastTierAny,
+			Action:      OpenAIFastPolicyActionForcePriority,
+			Scope:       BetaPolicyScopeAll,
+		}},
+	}
+	svc := newOpenAIGatewayServiceWithSettings(t, settings)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	updated, blocked, err := svc.applyOpenAIFastPolicyToWSResponseCreate(
+		context.Background(), account, "gpt-5.5", []byte(`{"type":"response.create","model":"gpt-5.5"}`),
+	)
+	require.NoError(t, err)
+	require.Nil(t, blocked)
+	require.Equal(t, OpenAIFastTierPriority, gjson.GetBytes(updated, "service_tier").String())
+
+	for _, action := range []string{BetaPolicyActionFilter, BetaPolicyActionBlock} {
+		settings.Rules[0].Action = action
+		svc = newOpenAIGatewayServiceWithSettings(t, settings)
+		updated, blocked, err = svc.applyOpenAIFastPolicyToWSResponseCreate(
+			context.Background(), account, "gpt-5.5", []byte(`{"type":"response.create","model":"gpt-5.5"}`),
+		)
+		require.NoError(t, err)
+		require.Nil(t, blocked)
+		require.JSONEq(t, `{"type":"response.create","model":"gpt-5.5"}`, string(updated))
+	}
+}
+
 func TestWSResponseCreate_FlexPassThrough(t *testing.T) {
 	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
