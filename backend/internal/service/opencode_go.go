@@ -18,9 +18,9 @@ const (
 	// the UI does not pick a model. glm-5.3 is a Chat Completions catalog ID.
 	DefaultOpenCodeGoTestModel = "glm-5.3"
 
-	openCodeGoProtocolRulesKey         = "protocol_rules"
-	maxOpenCodeGoProtocolRules         = 64
-	maxOpenCodeGoProtocolPatternLength = 128
+	protocolRulesCredentialKey   = "protocol_rules"
+	maxProtocolRules             = 64
+	maxProtocolRulePatternLength = 128
 )
 
 // DefaultOpenCodeGoModelIDs 是官方文档当前公开的模型 ID 目录，
@@ -67,16 +67,16 @@ func normalizeOpenCodeGoModelID(model string) string {
 	return model
 }
 
-// OpenCodeGoProtocolRule is one model-pattern → native protocol mapping.
+// ProtocolRule is one model-pattern → native protocol mapping.
 // Pattern is an exact ID or a suffix glob (foo* / *). First match wins.
-type OpenCodeGoProtocolRule struct {
+type ProtocolRule struct {
 	Pattern  string `json:"pattern"`
 	Protocol string `json:"protocol"`
 }
 
 // DefaultOpenCodeGoProtocolRules is the built-in adaptive routing table for Go.
-func DefaultOpenCodeGoProtocolRules() []OpenCodeGoProtocolRule {
-	return []OpenCodeGoProtocolRule{
+func DefaultOpenCodeGoProtocolRules() []ProtocolRule {
+	return []ProtocolRule{
 		{Pattern: "grok-*", Protocol: APIProtocolResponses},
 		{Pattern: "gpt-*", Protocol: APIProtocolResponses},
 		{Pattern: "muse-spark-*", Protocol: APIProtocolResponses},
@@ -87,8 +87,8 @@ func DefaultOpenCodeGoProtocolRules() []OpenCodeGoProtocolRule {
 
 // DefaultOpenCodeZenProtocolRules 对齐 https://opencode.ai/docs/zen/ 端点表：
 // GPT/Grok/Muse Spark → Responses，Claude/Qwen → Anthropic，其余 Chat Completions。
-func DefaultOpenCodeZenProtocolRules() []OpenCodeGoProtocolRule {
-	return []OpenCodeGoProtocolRule{
+func DefaultOpenCodeZenProtocolRules() []ProtocolRule {
+	return []ProtocolRule{
 		{Pattern: "grok-*", Protocol: APIProtocolResponses},
 		{Pattern: "gpt-*", Protocol: APIProtocolResponses},
 		{Pattern: "muse-spark-*", Protocol: APIProtocolResponses},
@@ -97,12 +97,7 @@ func DefaultOpenCodeZenProtocolRules() []OpenCodeGoProtocolRule {
 	}
 }
 
-// defaultOpenCodeProtocolRules 从 provider profile 取该接入模式的内置分流表。
-func defaultOpenCodeProtocolRules(mode string) []OpenCodeGoProtocolRule {
-	return LookupProviderProfile(PlatformOpenCodeGo).Endpoints(mode).ProtocolRules
-}
-
-func isNativeOpenCodeGoProtocol(protocol string) bool {
+func isNativeUpstreamProtocol(protocol string) bool {
 	switch protocol {
 	case APIProtocolChatCompletions, APIProtocolAnthropic, APIProtocolResponses:
 		return true
@@ -111,7 +106,7 @@ func isNativeOpenCodeGoProtocol(protocol string) bool {
 	}
 }
 
-func openCodeGoPatternMatches(pattern, model string) bool {
+func protocolRulePatternMatches(pattern, model string) bool {
 	pattern = strings.ToLower(strings.TrimSpace(pattern))
 	model = normalizeOpenCodeGoModelID(model)
 	if pattern == "" || model == "" {
@@ -126,12 +121,12 @@ func openCodeGoPatternMatches(pattern, model string) bool {
 	return model == pattern
 }
 
-func matchOpenCodeGoProtocolRules(model string, rules []OpenCodeGoProtocolRule) string {
+func matchProtocolRules(model string, rules []ProtocolRule) string {
 	for _, rule := range rules {
-		if !isNativeOpenCodeGoProtocol(rule.Protocol) {
+		if !isNativeUpstreamProtocol(rule.Protocol) {
 			continue
 		}
-		if openCodeGoPatternMatches(rule.Pattern, model) {
+		if protocolRulePatternMatches(rule.Pattern, model) {
 			return rule.Protocol
 		}
 	}
@@ -142,33 +137,33 @@ func matchOpenCodeGoProtocolRules(model string, rules []OpenCodeGoProtocolRule) 
 // 未命中时为 Chat Completions。账号自定义 protocol_rules 见
 // ResolveOpenCodeGoUpstreamProtocol。
 func OpenCodeGoModelProtocol(model string) string {
-	return matchOpenCodeGoProtocolRules(model, DefaultOpenCodeGoProtocolRules())
+	return matchProtocolRules(model, DefaultOpenCodeGoProtocolRules())
 }
 
-func (a *Account) openCodeGoProtocolRules() ([]OpenCodeGoProtocolRule, bool) {
+func (a *Account) configuredProtocolRules() ([]ProtocolRule, bool) {
 	if a == nil || a.Credentials == nil {
 		return nil, false
 	}
-	raw, ok := a.Credentials[openCodeGoProtocolRulesKey]
+	raw, ok := a.Credentials[protocolRulesCredentialKey]
 	if !ok || raw == nil {
 		return nil, false
 	}
-	rules, err := parseOpenCodeGoProtocolRules(raw)
+	rules, err := parseProtocolRules(raw)
 	if err != nil {
 		return nil, false
 	}
 	return rules, true
 }
 
-func parseOpenCodeGoProtocolRules(raw any) ([]OpenCodeGoProtocolRule, error) {
-	items, err := openCodeGoProtocolRuleItems(raw)
+func parseProtocolRules(raw any) ([]ProtocolRule, error) {
+	items, err := protocolRuleItems(raw)
 	if err != nil {
 		return nil, err
 	}
-	if len(items) > maxOpenCodeGoProtocolRules {
-		return nil, fmt.Errorf("protocol_rules supports at most %d entries", maxOpenCodeGoProtocolRules)
+	if len(items) > maxProtocolRules {
+		return nil, fmt.Errorf("protocol_rules supports at most %d entries", maxProtocolRules)
 	}
-	rules := make([]OpenCodeGoProtocolRule, 0, len(items))
+	rules := make([]ProtocolRule, 0, len(items))
 	for i, item := range items {
 		entry, ok := item.(map[string]any)
 		if !ok {
@@ -176,20 +171,20 @@ func parseOpenCodeGoProtocolRules(raw any) ([]OpenCodeGoProtocolRule, error) {
 		}
 		pattern, _ := entry["pattern"].(string)
 		protocol, _ := entry["protocol"].(string)
-		pattern, err := normalizeOpenCodeGoProtocolPattern(pattern)
+		pattern, err := normalizeProtocolRulePattern(pattern)
 		if err != nil {
 			return nil, fmt.Errorf("protocol_rules[%d]: %w", i, err)
 		}
 		protocol = strings.TrimSpace(protocol)
-		if !isNativeOpenCodeGoProtocol(protocol) {
+		if !isNativeUpstreamProtocol(protocol) {
 			return nil, fmt.Errorf("protocol_rules[%d]: protocol must be chat_completions, anthropic, or responses", i)
 		}
-		rules = append(rules, OpenCodeGoProtocolRule{Pattern: pattern, Protocol: protocol})
+		rules = append(rules, ProtocolRule{Pattern: pattern, Protocol: protocol})
 	}
 	return rules, nil
 }
 
-func openCodeGoProtocolRuleItems(raw any) ([]any, error) {
+func protocolRuleItems(raw any) ([]any, error) {
 	switch items := raw.(type) {
 	case []any:
 		return items, nil
@@ -204,12 +199,12 @@ func openCodeGoProtocolRuleItems(raw any) ([]any, error) {
 	}
 }
 
-func normalizeOpenCodeGoProtocolPattern(pattern string) (string, error) {
+func normalizeProtocolRulePattern(pattern string) (string, error) {
 	pattern = strings.ToLower(strings.TrimSpace(pattern))
 	if pattern == "" {
 		return "", fmt.Errorf("pattern is required")
 	}
-	if len(pattern) > maxOpenCodeGoProtocolPatternLength {
+	if len(pattern) > maxProtocolRulePatternLength {
 		return "", fmt.Errorf("pattern is too long")
 	}
 	if strings.ContainsAny(pattern, " \t") {
@@ -222,17 +217,17 @@ func normalizeOpenCodeGoProtocolPattern(pattern string) (string, error) {
 	return pattern, nil
 }
 
-// NormalizeOpenCodeGoProtocolRulesCredentials 校验并原地规范化 credentials.protocol_rules。
+// NormalizeProtocolRulesCredentials 校验并原地规范化 credentials.protocol_rules。
 // 未携带该字段时为 no-op，使旧账号继续使用内置默认表。
-func NormalizeOpenCodeGoProtocolRulesCredentials(credentials map[string]any) error {
+func NormalizeProtocolRulesCredentials(credentials map[string]any) error {
 	if credentials == nil {
 		return nil
 	}
-	raw, ok := credentials[openCodeGoProtocolRulesKey]
+	raw, ok := credentials[protocolRulesCredentialKey]
 	if !ok || raw == nil {
 		return nil
 	}
-	rules, err := parseOpenCodeGoProtocolRules(raw)
+	rules, err := parseProtocolRules(raw)
 	if err != nil {
 		return infraerrors.New(http.StatusBadRequest, "INVALID_OPENCODE_GO_PROTOCOL_RULES", err.Error())
 	}
@@ -243,7 +238,7 @@ func NormalizeOpenCodeGoProtocolRulesCredentials(credentials map[string]any) err
 			"protocol": rule.Protocol,
 		})
 	}
-	credentials[openCodeGoProtocolRulesKey] = encoded
+	credentials[protocolRulesCredentialKey] = encoded
 	return nil
 }
 
@@ -291,19 +286,12 @@ func openCodeGoNativeProtocol(account *Account, model string) string {
 // ResolveOpenCodeGoUpstreamProtocol 按账号协议配置与模型规则决定上游协议。
 // 显式 pinned 协议优先；adaptive（默认）先走 credentials.protocol_rules，
 // 未配置时回落内置默认表；已配置但未命中则走 Chat Completions。
+// 规则见 resolveModelRoutedProtocol。
 func (a *Account) ResolveOpenCodeGoUpstreamProtocol(model string) string {
 	if a == nil || !a.IsOpenCodeGo() {
 		return ""
 	}
-	switch a.GetAPIProtocol() {
-	case APIProtocolChatCompletions, APIProtocolAnthropic, APIProtocolResponses:
-		return a.GetAPIProtocol()
-	default:
-		if rules, present := a.openCodeGoProtocolRules(); present {
-			return matchOpenCodeGoProtocolRules(model, rules)
-		}
-		return matchOpenCodeGoProtocolRules(model, defaultOpenCodeProtocolRules(a.GetOpenCodeAccountMode()))
-	}
+	return a.resolveModelRoutedProtocol(model)
 }
 
 // openCodeGoQuotaURL 根据 base_url 解析 OpenCode Go 额度端点。
