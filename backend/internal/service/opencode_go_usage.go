@@ -806,7 +806,42 @@ func (s *OpenCodeGoUsageService) refreshLoadedAccount(ctx context.Context, accou
 	if err := s.updateSnapshot(ctx, account, snapshot); err != nil {
 		return nil, err
 	}
+	s.syncSchedulingQuotaExtra(ctx, account, body, now)
 	return snapshot, nil
+}
+
+// syncSchedulingQuotaExtra 把本次成功拉取的用量同步写入调度读取的
+// opencode_go_{5h,weekly,monthly}_* 键（与 CNProviderQuotaService 手动探测同一
+// 解析与格式），供账号阈值停调与 429 冷却到窗口重置点使用；定时 CN 额度探测
+// 不覆盖 opencode_go，这里是这些键唯一的自动来源。同一 api_key 分组共享同一份
+// 订阅用量，只写 opencode_go 平台的 Go 订阅成员（挂载在其他平台的账号按其
+// 自身平台评估阈值）。写入失败只记日志，不影响用量快照刷新。
+func (s *OpenCodeGoUsageService) syncSchedulingQuotaExtra(ctx context.Context, account *Account, body []byte, now time.Time) {
+	tiers := parseOpenCodeGoUsageTiers(body)
+	if len(tiers) == 0 {
+		return
+	}
+	updates := cnQuotaExtraUpdates(PlatformOpenCodeGo, tiers, now)
+	members := []Account{*account}
+	if writer, ok := s.accountRepo.(openCodeGoUsageRepository); ok {
+		siblings, err := writer.ListOpenCodeGoUsageGroupAccounts(ctx, []*Account{account})
+		if err != nil {
+			logger.LegacyPrintf("service.opencode_go_usage",
+				"scheduling_quota_group_lookup_failed: account_id=%d err=%v", account.ID, err)
+		} else if len(siblings) > 0 {
+			members = siblings
+		}
+	}
+	for i := range members {
+		member := &members[i]
+		if !member.IsOpenCodeGoPlan() {
+			continue
+		}
+		if err := s.accountRepo.UpdateExtra(ctx, member.ID, updates); err != nil {
+			logger.LegacyPrintf("service.opencode_go_usage",
+				"scheduling_quota_persist_failed: account_id=%d err=%v", member.ID, err)
+		}
+	}
 }
 
 func (s *OpenCodeGoUsageService) persistFailure(

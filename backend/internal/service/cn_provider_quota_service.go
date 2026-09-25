@@ -644,10 +644,14 @@ func cnQuotaExtraUpdates(provider string, tiers []CNQuotaTier, now time.Time) ma
 //
 //	{ "usage": { "rolling": {percent, resetsAt}, "weekly": {...}, "monthly": {...} } }
 //
-// percent 为已用百分比（0-100）；rolling 映射为 5h 窗口。
+// percent 为已用百分比（0-100）；rolling 映射为 5h 窗口。与自动刷新的
+// parseOpenCodeGoUsageJSON 一致，窗口也可直接位于顶层（无 usage 包装）。
 func parseOpenCodeGoUsageTiers(body []byte) []CNQuotaTier {
 	usage := gjson.GetBytes(body, "usage")
 	if !usage.Exists() {
+		usage = gjson.ParseBytes(body)
+	}
+	if !usage.IsObject() {
 		return nil
 	}
 	var tiers []CNQuotaTier

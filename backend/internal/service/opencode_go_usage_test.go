@@ -30,6 +30,7 @@ type openCodeGoUsageTestRepo struct {
 	getByIDCalls       atomic.Int64
 	disableAutoCalls   atomic.Int64
 	disableAutoAttempt atomic.Int64
+	updateExtraCalls   atomic.Int64
 }
 
 func (r *openCodeGoUsageTestRepo) GetByID(_ context.Context, id int64) (*Account, error) {
@@ -77,6 +78,24 @@ func (r *openCodeGoUsageTestRepo) ListOpenCodeGoUsageGroupAccounts(_ context.Con
 		result = append(result, cloneOpenCodeGoUsageTestAccount(*account))
 	}
 	return result, nil
+}
+
+// UpdateExtra mirrors the repository's JSONB merge (extra || updates) for one account.
+func (r *openCodeGoUsageTestRepo) UpdateExtra(_ context.Context, id int64, updates map[string]any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	account := r.accounts[id]
+	if account == nil {
+		return ErrAccountNotFound
+	}
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	for key, value := range updates {
+		account.Extra[key] = value
+	}
+	r.updateExtraCalls.Add(1)
+	return nil
 }
 
 func (r *openCodeGoUsageTestRepo) SetOpenCodeGoUsageAutoRefresh(_ context.Context, expected *Account, enabled bool) error {
@@ -978,4 +997,78 @@ func TestOpenCodeGoUsageRefreshRejectsIneligibleAccount(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrOpenCodeGoUsageAccountInvalid))
 	require.Equal(t, int64(0), stub.calls.Load())
+}
+
+func openCodeGoPlatformUsageAccount(id int64, apiKey, mode string) *Account {
+	return &Account{
+		ID: id, Name: fmt.Sprintf("opencode-go-%d", id), Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": apiKey, "account_mode": mode},
+		Extra:       map[string]any{}, Status: StatusActive, Schedulable: true, Concurrency: 1,
+	}
+}
+
+func openCodeGoUsageFixtureAt(rollingPercent float64, now time.Time) string {
+	return fmt.Sprintf(`{"usage":{"rolling":{"status":"ok","percent":%g,"resetsAt":%q},"weekly":{"status":"ok","percent":40,"resetsAt":%q},"monthly":{"status":"ok","percent":10,"resetsAt":%q}}}`,
+		rollingPercent,
+		now.Add(2*time.Hour).UTC().Format(time.RFC3339),
+		now.Add(72*time.Hour).UTC().Format(time.RFC3339),
+		now.Add(20*24*time.Hour).UTC().Format(time.RFC3339))
+}
+
+// 自动刷新拿到的 OpenCode Go 用量必须同步到调度读取的 opencode_go_* 键：
+// 阈值停调与 429 冷却到窗口重置点都依赖这些键，而定时 CN 额度探测不覆盖 opencode_go。
+func TestOpenCodeGoUsageRefreshFeedsSchedulingThreshold(t *testing.T) {
+	now := time.Now().UTC()
+	anchor := openCodeGoPlatformUsageAccount(81, "shared-go-key", AccountModeGo)
+	sibling := openCodeGoPlatformUsageAccount(82, "shared-go-key", "")
+	mounted := openCodeGoUsageAccount(83)
+	mounted.Credentials["api_key"] = "shared-go-key"
+	repo := &openCodeGoUsageTestRepo{accounts: map[int64]*Account{
+		anchor.ID: anchor, sibling.ID: sibling, mounted.ID: mounted,
+	}}
+	stub := &openCodeGoUsageHTTPStub{body: []byte(openCodeGoUsageFixtureAt(95, now))}
+	svc := newOpenCodeGoUsageTestService(t, repo, stub, &upstreamBillingProbeSettingRepo{})
+
+	_, err := svc.Refresh(context.Background(), anchor.ID)
+	require.NoError(t, err)
+
+	thresholds := map[string]int{PlatformOpenCodeGo: 80}
+	for _, id := range []int64{anchor.ID, sibling.ID} {
+		account, err := repo.GetByID(context.Background(), id)
+		require.NoError(t, err)
+		require.Equal(t, 95.0, account.Extra["opencode_go_5h_used_percent"], "account %d", id)
+		require.Equal(t, 40.0, account.Extra["opencode_go_weekly_used_percent"], "account %d", id)
+		require.Equal(t, 10.0, account.Extra["opencode_go_monthly_used_percent"], "account %d", id)
+		require.NotEmpty(t, account.Extra["opencode_go_usage_updated_at"], "account %d", id)
+
+		decision := EvaluateAccountSchedulingThreshold(account, thresholds, now)
+		require.True(t, decision.ShouldPause, "account %d", id)
+		require.Equal(t, "5h", decision.Window)
+		require.NotNil(t, decision.Until)
+		require.WithinDuration(t, now.Add(2*time.Hour), *decision.Until, time.Second)
+
+		reset := cnProviderQuotaSnapshotReset(account, now)
+		require.NotNil(t, reset, "429 cooldown must find the window reset for account %d", id)
+		require.WithinDuration(t, now.Add(2*time.Hour), *reset, time.Second)
+	}
+
+	// 挂载在其他平台下的同 key 账号不参与 opencode_go 调度阈值，不写这些键。
+	mountedAfter, err := repo.GetByID(context.Background(), mounted.ID)
+	require.NoError(t, err)
+	require.NotContains(t, mountedAfter.Extra, "opencode_go_5h_used_percent")
+}
+
+func TestOpenCodeGoUsageRefreshFailureKeepsSchedulingQuota(t *testing.T) {
+	account := openCodeGoPlatformUsageAccount(84, "go-key-84", AccountModeGo)
+	account.Extra["opencode_go_5h_used_percent"] = 42.0
+	repo := &openCodeGoUsageTestRepo{accounts: map[int64]*Account{account.ID: account}}
+	stub := &openCodeGoUsageHTTPStub{status: http.StatusBadGateway, body: []byte(`bad gateway`)}
+	svc := newOpenCodeGoUsageTestService(t, repo, stub, &upstreamBillingProbeSettingRepo{})
+
+	_, err := svc.Refresh(context.Background(), account.ID)
+	require.NoError(t, err)
+	require.Zero(t, repo.updateExtraCalls.Load())
+	after, err := repo.GetByID(context.Background(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, 42.0, after.Extra["opencode_go_5h_used_percent"])
 }

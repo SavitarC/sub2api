@@ -203,6 +203,14 @@ func TestParseOpenCodeGoUsageTiers(t *testing.T) {
 	require.Equal(t, "2026-10-01T00:00:00Z", updates["opencode_go_monthly_reset_at"])
 
 	require.Empty(t, parseOpenCodeGoUsageTiers([]byte(`{"ok":true}`)))
+
+	// 与 parseOpenCodeGoUsageJSON 一致：窗口可直接位于顶层。
+	direct := parseOpenCodeGoUsageTiers([]byte(`{"rolling":{"percent":7,"resetsAt":"2026-09-07T12:00:00Z"}}`))
+	require.Len(t, direct, 1)
+	require.Equal(t, "5h", direct[0].Window)
+	require.Equal(t, 7.0, direct[0].UsedPercent)
+	require.Empty(t, parseOpenCodeGoUsageTiers([]byte(`{"usage":null}`)))
+	require.Empty(t, parseOpenCodeGoUsageTiers([]byte(`[]`)))
 }
 
 // TestCNProviderResponseIndicatesInsufficientBalance 覆盖中英文余额不足文案与否定用例。

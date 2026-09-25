@@ -449,7 +449,8 @@
            展示。对挂载在 kimi/zhipu/deepseek/minimax 下的账号：CN 的额度/余额
            探测端点由 base_url 衍生，对 opencode.ai 会被后端出站 URL 白名单拒绝，
            渲染出来只会给用户一行探测报错。两种情况都不再渲染 CN 子单元格与
-           占位符（调度停调仍由上游 CN 触发各自驱动）。 -->
+           占位符（platform=opencode_go 的调度停调配额键由后端 OpenCode 用量刷新
+           同步写入；挂载平台仍由各自的 CN 探测驱动）。 -->
       <OpenCodeGoUsageCell
         v-else-if="account.opencode_go_usage?.eligible"
         :account="account"
