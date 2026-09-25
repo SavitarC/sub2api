@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
@@ -153,4 +154,128 @@ func TestAllCNBalancesBelowThreshold(t *testing.T) {
 	require.True(t, allCNBalancesBelowThreshold(singleLow, 5.0))
 	singleOK := &CNProviderBalanceResult{Balance: 10.0, Currency: "CNY"}
 	require.False(t, allCNBalancesBelowThreshold(singleOK, 5.0))
+}
+
+type fakeOpenCodeGoUsageRefresher struct {
+	mu        sync.Mutex
+	settings  *OpenCodeGoUsageSettings
+	refreshed []int64
+	err       error
+}
+
+func (f *fakeOpenCodeGoUsageRefresher) GetSettings(ctx context.Context) (*OpenCodeGoUsageSettings, error) {
+	return f.settings, nil
+}
+
+func (f *fakeOpenCodeGoUsageRefresher) Refresh(ctx context.Context, accountID int64) (*OpenCodeGoUsageState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refreshed = append(f.refreshed, accountID)
+	return &OpenCodeGoUsageState{AccountID: accountID}, f.err
+}
+
+func openCodeGoBalanceCheckAccount(id int64, apiKey, mode string, autoRefresh bool, status string) Account {
+	account := Account{ID: id, Platform: PlatformOpenCodeGo, Type: AccountTypeAPIKey, Status: status,
+		Credentials: map[string]any{"api_key": apiKey, "account_mode": mode},
+		Extra:       map[string]any{}}
+	if autoRefresh {
+		account.Extra[OpenCodeGoUsageAutoRefreshExtraKey] = true
+	}
+	return account
+}
+
+// 周期任务为未被 OpenCode 用量自动刷新覆盖的 Go 订阅账号兜底刷新用量，使调度
+// 阈值与 429 冷却在默认配置下也有数据；同一 api_key 分组只刷新一次。
+func TestCNProviderBalanceCheckRunOnceRefreshesOpenCodeGoWithoutAutoRefresh(t *testing.T) {
+	accounts := []Account{
+		openCodeGoBalanceCheckAccount(11, "key-1", AccountModeGo, false, StatusActive),
+		openCodeGoBalanceCheckAccount(12, "key-1", "", false, StatusActive), // 与 11 同组
+		openCodeGoBalanceCheckAccount(13, "key-2", AccountModeGo, true, StatusActive),
+		openCodeGoBalanceCheckAccount(14, "key-3", AccountModeZen, false, StatusActive), // Zen 无订阅窗口
+		openCodeGoBalanceCheckAccount(15, "key-4", AccountModeGo, false, StatusDisabled),
+		// 16 与 13 同组但尚未落自动刷新标记：分组已由 runner 覆盖时同样跳过。
+		openCodeGoBalanceCheckAccount(16, "key-2", AccountModeGo, false, StatusActive),
+	}
+	for _, tc := range []struct {
+		name          string
+		globalEnabled bool
+		want          []int64
+	}{
+		// 自动刷新全局开启：已开启自动刷新的分组（13）由 OpenCode 用量服务负责。
+		{"auto refresh runner enabled", true, []int64{11}},
+		// 全局关闭时 runner 不运行，账号级开关不起作用，需要兜底。
+		{"auto refresh runner disabled", false, []int64{11, 13}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &fakeCNCheckRepo{byPlatform: map[string][]Account{PlatformOpenCodeGo: accounts}}
+			refresher := &fakeOpenCodeGoUsageRefresher{settings: &OpenCodeGoUsageSettings{Enabled: tc.globalEnabled}}
+			svc := &CNProviderBalanceCheckService{
+				accountRepo:   repo,
+				quotaService:  &fakeCNQuotaProber{},
+				openCodeUsage: refresher,
+				cfg:           &config.Config{},
+			}
+
+			svc.runOnce()
+
+			require.ElementsMatch(t, tc.want, refresher.refreshed)
+		})
+	}
+}
+
+func TestCNProviderBalanceCheckRunOnceToleratesOpenCodeGoRefreshErrors(t *testing.T) {
+	repo := &fakeCNCheckRepo{byPlatform: map[string][]Account{PlatformOpenCodeGo: {
+		openCodeGoBalanceCheckAccount(21, "key-21", AccountModeGo, false, StatusActive),
+	}}}
+	refresher := &fakeOpenCodeGoUsageRefresher{
+		settings: &OpenCodeGoUsageSettings{},
+		err:      ErrOpenCodeGoUsageRefreshRateLimited,
+	}
+	svc := &CNProviderBalanceCheckService{accountRepo: repo, openCodeUsage: refresher, cfg: &config.Config{}}
+	require.NotPanics(t, func() { svc.runOnce() })
+	require.Equal(t, []int64{21}, refresher.refreshed)
+}
+
+type openCodeGoBalanceCheckRepo struct {
+	*openCodeGoUsageTestRepo
+}
+
+func (r openCodeGoBalanceCheckRepo) ListByPlatform(_ context.Context, platform string) ([]Account, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []Account
+	for _, account := range r.accounts {
+		if account.Platform == platform {
+			out = append(out, cloneOpenCodeGoUsageTestAccount(*account))
+		}
+	}
+	return out, nil
+}
+
+// 端到端：默认配置（OpenCode 用量自动刷新关闭）下，一次周期任务即可让 Go 订阅
+// 账号获得调度阈值数据并按阈值停调。
+func TestCNProviderBalanceCheckFeedsOpenCodeGoThresholdByDefault(t *testing.T) {
+	now := time.Now().UTC()
+	account := openCodeGoPlatformUsageAccount(31, "go-key-31", AccountModeGo)
+	usageRepo := &openCodeGoUsageTestRepo{accounts: map[int64]*Account{account.ID: account}}
+	stub := &openCodeGoUsageHTTPStub{body: []byte(openCodeGoUsageFixtureAt(95, now))}
+	usageSvc := newOpenCodeGoUsageTestService(t, usageRepo, stub, &upstreamBillingProbeSettingRepo{})
+	settings, err := usageSvc.GetSettings(context.Background())
+	require.NoError(t, err)
+	require.False(t, settings.Enabled, "default must be auto refresh off")
+
+	svc := &CNProviderBalanceCheckService{
+		accountRepo:   openCodeGoBalanceCheckRepo{usageRepo},
+		openCodeUsage: usageSvc,
+		cfg:           &config.Config{},
+	}
+	svc.runOnce()
+
+	require.Equal(t, int64(1), stub.calls.Load())
+	after, err := usageRepo.GetByID(context.Background(), account.ID)
+	require.NoError(t, err)
+	decision := EvaluateAccountSchedulingThreshold(after, map[string]int{PlatformOpenCodeGo: 80}, now)
+	require.True(t, decision.ShouldPause)
+	require.Equal(t, "5h", decision.Window)
+	require.NotNil(t, decodeOpenCodeGoUsageSnapshot(after.Extra), "display snapshot is refreshed too")
 }

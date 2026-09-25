@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -16,6 +17,12 @@ type cnQuotaProber interface {
 	QueryUsage(ctx context.Context, accountID int64) (*CNProviderQuotaProbeResult, error)
 }
 
+// openCodeGoUsageRefresher 抽象 OpenCode Go 用量刷新（*OpenCodeGoUsageService 实现，测试可替换）。
+type openCodeGoUsageRefresher interface {
+	GetSettings(ctx context.Context) (*OpenCodeGoUsageSettings, error)
+	Refresh(ctx context.Context, accountID int64) (*OpenCodeGoUsageState, error)
+}
+
 // cnQuotaProbeConcurrency 周期任务并发探测额度账号的并发度。
 const cnQuotaProbeConcurrency = 4
 
@@ -27,10 +34,13 @@ const cnQuotaProbeConcurrency = 4
 // 克隆自 AccountExpiryService 的 Start/Stop/runOnce + ticker 骨架。
 // 余额探测仅覆盖有公开余额端点的 kimi / deepseek；智谱无余额端点，仅靠响应式 429/402。
 // 额度探测覆盖 kimi / zhipu 的 coding plan 账号（deepseek 无 coding 套餐）。
+// OpenCode Go 订阅账号未被 OpenCode 用量自动刷新覆盖时，经 OpenCodeGoUsageService
+// 兜底刷新（同时写展示快照与调度阈值读取的配额键）。
 type CNProviderBalanceCheckService struct {
 	accountRepo    AccountRepository
 	balanceService *CNProviderBalanceService
 	quotaService   cnQuotaProber
+	openCodeUsage  openCodeGoUsageRefresher
 	cfg            *config.Config
 	interval       time.Duration
 	stopCh         chan struct{}
@@ -153,8 +163,10 @@ func (s *CNProviderBalanceCheckService) runOnce() {
 		}
 	}
 
+	openCodeTargets := s.collectOpenCodeGoUsageTargets()
+
 	// 预算按工作量放大：4 并发 × 15s/批 + payg 每账号 5s，下限 30s 上限 300s。
-	batches := (len(quotaTargets) + cnQuotaProbeConcurrency - 1) / cnQuotaProbeConcurrency
+	batches := (len(quotaTargets) + len(openCodeTargets) + cnQuotaProbeConcurrency - 1) / cnQuotaProbeConcurrency
 	timeout := 30*time.Second + time.Duration(batches)*15*time.Second + time.Duration(len(paygTargets))*5*time.Second
 	if timeout > 300*time.Second {
 		timeout = 300 * time.Second
@@ -188,8 +200,84 @@ func (s *CNProviderBalanceCheckService) runOnce() {
 		wg.Wait()
 	}
 
+	if len(openCodeTargets) > 0 {
+		sem := make(chan struct{}, cnQuotaProbeConcurrency)
+		var wg sync.WaitGroup
+		for _, accountID := range openCodeTargets {
+			wg.Add(1)
+			go func(id int64) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				s.refreshOpenCodeGoUsage(ctx, id)
+			}(accountID)
+		}
+		wg.Wait()
+	}
+
 	if paused > 0 || cleared > 0 {
 		log.Printf("[CNBalance] paused=%d cleared=%d (threshold=%.2f)", paused, cleared, threshold)
+	}
+}
+
+// collectOpenCodeGoUsageTargets 选出需要兜底刷新用量的 OpenCode Go 订阅账号：
+// 激活、Go 订阅、API Key，且所在分组未被 OpenCode 用量自动刷新覆盖（全局开关开启
+// 且分组内任一成员开启自动刷新时，由 OpenCodeGoUsageService 的 runner 负责，这里
+// 跳过以免对同一端点重复请求；开关按分组生效，新加入的成员可能尚未落该标记）。
+// 同一 api_key 分组只取一个账号：一次刷新会写入组内全部成员。
+func (s *CNProviderBalanceCheckService) collectOpenCodeGoUsageTargets() []int64 {
+	if s.openCodeUsage == nil {
+		return nil
+	}
+	autoRunnerEnabled := false
+	if settings, err := s.openCodeUsage.GetSettings(context.Background()); err != nil {
+		log.Printf("[CNBalance] load opencode go usage settings failed: %v", err)
+	} else if settings != nil {
+		autoRunnerEnabled = settings.Enabled
+	}
+	accounts, err := s.accountRepo.ListByPlatform(context.Background(), PlatformOpenCodeGo)
+	if err != nil {
+		log.Printf("[CNBalance] list %s accounts failed: %v", PlatformOpenCodeGo, err)
+		return nil
+	}
+	coveredGroups := make(map[string]struct{})
+	if autoRunnerEnabled {
+		for i := range accounts {
+			account := &accounts[i]
+			if !account.IsActive() || !openCodeGoUsageAutoRefreshEnabled(account) {
+				continue
+			}
+			if group, ok := openCodeGoUsageGroupFingerprint(account); ok {
+				coveredGroups[group] = struct{}{}
+			}
+		}
+	}
+	var targets []int64
+	for i := range accounts {
+		account := &accounts[i]
+		if !account.IsActive() || !IsOpenCodeGoUsageAccount(account) {
+			continue
+		}
+		group, ok := openCodeGoUsageGroupFingerprint(account)
+		if !ok {
+			continue
+		}
+		if _, covered := coveredGroups[group]; covered {
+			continue
+		}
+		// 标记为已覆盖，同组后续成员不再重复刷新。
+		coveredGroups[group] = struct{}{}
+		targets = append(targets, account.ID)
+	}
+	return targets
+}
+
+// refreshOpenCodeGoUsage 兜底刷新单个 OpenCode Go 分组的用量。手动刷新限频
+// （同组 30s 内刚刷新过）属于预期情况，不记日志；上游失败由用量快照自行记录。
+func (s *CNProviderBalanceCheckService) refreshOpenCodeGoUsage(ctx context.Context, accountID int64) {
+	if _, err := s.openCodeUsage.Refresh(ctx, accountID); err != nil &&
+		!errors.Is(err, ErrOpenCodeGoUsageRefreshRateLimited) {
+		log.Printf("[CNBalance] opencode go usage refresh account %d failed: %v", accountID, err)
 	}
 }
 

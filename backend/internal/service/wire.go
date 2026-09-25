@@ -318,12 +318,14 @@ func ProvideCNProviderBalanceService(
 
 // ProvideCNProviderBalanceCheckService 构造并启动周期余额/额度检测任务。
 // payg 账号探余额（低余额停调）；coding plan 账号探 5h/weekly 滚动窗口
-// （落 extra 快照供调度阈值评估自动停调）。
+// （落 extra 快照供调度阈值评估自动停调）；OpenCode Go 订阅账号在未开启
+// OpenCode 用量自动刷新时经 openCodeUsage 兜底刷新。
 // 间隔取自 gateway.cn_providers.balance_check_interval_minutes；<=0 或关闭时不启动。
 func ProvideCNProviderBalanceCheckService(
 	accountRepo AccountRepository,
 	balanceService *CNProviderBalanceService,
 	quotaService *CNProviderQuotaService,
+	openCodeUsage *OpenCodeGoUsageService,
 	cfg *config.Config,
 ) *CNProviderBalanceCheckService {
 	minutes := 10
@@ -331,6 +333,9 @@ func ProvideCNProviderBalanceCheckService(
 		minutes = cfg.Gateway.CNProviders.BalanceCheckIntervalMinutes
 	}
 	svc := NewCNProviderBalanceCheckService(accountRepo, balanceService, quotaService, cfg, time.Duration(minutes)*time.Minute)
+	if openCodeUsage != nil {
+		svc.openCodeUsage = openCodeUsage
+	}
 	svc.Start()
 	return svc
 }
