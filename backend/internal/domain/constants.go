@@ -29,9 +29,15 @@ const (
 	PlatformDeepseek = "deepseek" // DeepSeek
 	PlatformMiniMax  = "minimax"  // MiniMax (M 系列)
 	// PlatformOpenCodeGo 是 OpenCode 平台（账号类型 Zen 按量 / Go 订阅）。
-	// 值保持 opencode_go 以兼容已落库的分组、配额与 Composite 路由 CHECK。
+	// 值保持 opencode_go 以兼容已落库的账号、分组、配额与 Composite 路由。
 	PlatformOpenCodeGo = "opencode_go"
-	PlatformComposite  = "composite"
+	// PlatformCommandCode 是 Command Code Provider API（多模型聚合，积分计费，
+	// 订阅套餐另有 5 小时 / 每周滚动窗口）。
+	PlatformCommandCode = "command_code"
+	// PlatformCline 是 Cline API（多模型聚合，OpenAI 兼容 Chat Completions；按量积分计费，
+	// 另有 ClinePass 订阅）。
+	PlatformCline     = "cline"
+	PlatformComposite = "composite"
 )
 
 // Account mode constants 区分国产供应商的「按量付费（余额）」与「Coding Plan」两种接入方式。
@@ -41,6 +47,7 @@ const (
 	AccountModeCoding = "coding" // Coding Plan：滚动用量窗口冷却（5h / weekly）
 	AccountModeZen    = "zen"    // OpenCode Zen：按量付费，https://opencode.ai/zen/v1
 	AccountModeGo     = "go"     // OpenCode Go：订阅额度窗口，https://opencode.ai/zen/go/v1
+	AccountModePass   = "pass"   // ClinePass：订阅套餐（cline-pass/* 模型），5 小时 / 每周 / 每月用量上限
 )
 
 // API protocol constants 国产供应商的上游 API 协议维度。存储于
