@@ -578,7 +578,7 @@
             >
               <Icon name="creditCard" size="sm" />
             </div>
-            <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ providerModeLabel(mode) }}</span>
+            <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ providerModeLabel(mode, t) }}</span>
           </button>
         </div>
       </div>
@@ -4007,6 +4007,7 @@ import {
   isHeaderOverrideCapable,
   isMultiProtocolApiKeyPlatform,
   providerAccountModes,
+  providerModeLabel,
   providerNativeProtocols,
   providerRoutesByModel,
   resolveProviderAccountMode,
@@ -4245,20 +4246,6 @@ const extraMultiProtocolPlatforms = computed(() =>
 const genericAccountModes = computed(() => providerAccountModes(form.platform))
 // 按模型分流的供应商（OpenCode 等）：adaptive 账号携带 protocol_rules。
 const routesByModel = computed(() => providerRoutesByModel(form.platform))
-function providerModeLabel(mode: string): string {
-  switch (mode) {
-    case 'payg':
-      return t('admin.accounts.cnProviders.accountMode.payg')
-    case 'coding':
-      return t('admin.accounts.cnProviders.accountMode.coding')
-    case 'zen':
-      return t('admin.accounts.opencodeGo.accountMode.zen')
-    case 'go':
-      return t('admin.accounts.opencodeGo.accountMode.go')
-    default:
-      return mode
-  }
-}
 function currentOpenCodeOrCNMode(): string {
   return isOpenCodeGoPlatform.value ? openCodeAccountMode.value : accountMode.value
 }

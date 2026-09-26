@@ -364,6 +364,33 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).not.toContain('-')
   })
 
+  it('Cline 按量计费账号只渲染积分余额，ClinePass 账号显示占位符', async () => {
+    const mountCline = (accountMode: string) =>
+      mount(AccountUsageCell, {
+        props: {
+          account: makeAccount({
+            id: accountMode === 'pass' ? 9105 : 9104,
+            platform: 'cline',
+            type: 'apikey',
+            credentials: { api_key: 'sk-cline', account_mode: accountMode }
+          })
+        },
+        global: {
+          stubs: { ...cnUsageCellStubs, UsageProgressBar: true, AccountQuotaInfo: true }
+        }
+      })
+
+    // 子单元格自行按 模式×平台 判定显隐；两者都不可见时才显示 `-` 占位符。
+    const payg = mountCline('payg')
+    await flushPromises()
+    expect(payg.find('[data-test="cn-balance-cell"]').exists()).toBe(true)
+    expect(payg.text()).not.toContain('-')
+
+    const pass = mountCline('pass')
+    await flushPromises()
+    expect(pass.text()).toContain('-')
+  })
+
   it('Antigravity 图片用量会聚合新旧 image 模型', async () => {
     getUsage.mockResolvedValue({
       antigravity_quota: {

@@ -301,6 +301,24 @@ export function providerHasModelCatalog(platform: string): boolean {
   return getProviderProfile(platform)?.model_catalog === true
 }
 
+/** 接入模式的展示名；专有名词（ClinePass）不参与 i18n。 */
+export function providerModeLabel(mode: string, t: (key: string) => string): string {
+  switch (mode) {
+    case 'payg':
+      return t('admin.accounts.cnProviders.accountMode.payg')
+    case 'coding':
+      return t('admin.accounts.cnProviders.accountMode.coding')
+    case 'zen':
+      return t('admin.accounts.opencodeGo.accountMode.zen')
+    case 'go':
+      return t('admin.accounts.opencodeGo.accountMode.go')
+    case 'pass':
+      return 'ClinePass'
+    default:
+      return mode
+  }
+}
+
 /** 供应商的接入模式，默认模式在前。 */
 export function providerAccountModes(platform: string): string[] {
   return getProviderProfile(platform)?.modes.map(item => item.mode) ?? []
@@ -529,6 +547,8 @@ export function cnQuotaCellVisible(platform: string, accountMode: string): boole
 
 export function cnBalanceCellVisible(platform: string, accountMode: string): boolean {
   if (platform === 'command_code') return true
+  // Cline：按量计费账号查积分余额；ClinePass 的用量上限没有查询接口。
+  if (platform === 'cline') return accountMode !== 'pass'
   return (platform === 'kimi' || platform === 'deepseek') && accountMode !== 'coding'
 }
 

@@ -249,6 +249,30 @@
           }
         ]
       }
+    },
+    {
+      "id": "cline",
+      "display_name": "Cline",
+      "gateway": "openai",
+      "cn_provider": false,
+      "multi_protocol": {
+        "default_mode": "payg",
+        "routing": "by_inbound",
+        "modes": [
+          {
+            "mode": "payg",
+            "base_urls": {
+              "chat_completions": "https://api.cline.bot/api/v1"
+            }
+          },
+          {
+            "mode": "pass",
+            "base_urls": {
+              "chat_completions": "https://api.cline.bot/api/v1"
+            }
+          }
+        ]
+      }
     }
   ],
   "composite_precedence": [
@@ -262,6 +286,7 @@
     "deepseek",
     "minimax",
     "opencode_go",
-    "command_code"
+    "command_code",
+    "cline"
   ]
 }

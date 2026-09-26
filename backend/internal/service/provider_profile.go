@@ -12,6 +12,8 @@ type ProviderEndpoints struct {
 	// ProtocolRules 是按模型分流的内置默认表（首条命中生效）；为空表示该模式
 	// 不按模型分流，由账号 api_protocol 决定上游协议。
 	ProtocolRules []ProtocolRule
+	// DefaultTestModel 覆盖 ProviderProfile.DefaultTestModel（接入模式间可用模型不同时）。
+	DefaultTestModel string
 }
 
 // ProviderRouting 决定多协议供应商账号如何选择上游协议。
@@ -45,6 +47,19 @@ type ProviderProfile struct {
 	// ModelCatalog 表示上游 {Chat Completions 基址}/models 为每个模型给出
 	// supported_endpoints；按模型分流时据此判断模型支持哪些协议（见 model_protocol_catalog.go）。
 	ModelCatalog bool
+}
+
+// providerDefaultTestModel 返回账号连接测试未指定模型时的默认模型：接入模式的设置优先于
+// profile；非多协议供应商或未设置时为空。
+func (a *Account) providerDefaultTestModel() string {
+	profile := a.providerProfile()
+	if profile == nil {
+		return ""
+	}
+	if model := profile.Endpoints(a.GetCredential("account_mode")).DefaultTestModel; model != "" {
+		return model
+	}
+	return profile.DefaultTestModel
 }
 
 // Endpoints 返回指定接入模式的端点；未知模式回落 DefaultMode。
@@ -191,6 +206,22 @@ var providerProfiles = map[string]*ProviderProfile{
 					APIProtocolAnthropic:       DefaultCommandCodeAnthropicBaseURL,
 				},
 				ProtocolRules: DefaultCommandCodeProtocolRules(),
+			},
+		},
+	},
+	PlatformCline: {
+		Platform:    PlatformCline,
+		DefaultMode: AccountModePayG,
+		// 按量计费与 ClinePass 共用同一个 API Key 与端点，由模型名决定计费方式
+		// （cline-pass/* 走订阅）；两个接入模式只影响超限错误的作用范围与测试模型。
+		Modes: map[string]ProviderEndpoints{
+			AccountModePayG: {
+				BaseURLs:         map[string]string{APIProtocolChatCompletions: DefaultClineBaseURL},
+				DefaultTestModel: DefaultClineTestModel,
+			},
+			AccountModePass: {
+				BaseURLs:         map[string]string{APIProtocolChatCompletions: DefaultClineBaseURL},
+				DefaultTestModel: DefaultClinePassTestModel,
 			},
 		},
 	},

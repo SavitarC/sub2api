@@ -154,6 +154,9 @@ func (s *CNProviderBalanceCheckService) runOnce() {
 		}
 	}
 
+	// Cline 按量计费账号：积分余额低于阈值时同样临时停调。
+	paygTargets = append(paygTargets, s.collectClineTargets()...)
+
 	// 预算按工作量放大：4 并发 × 15s/批 + payg 每账号 5s，下限 30s 上限 300s。
 	commandCodeTargets := s.collectCommandCodeTargets()
 	batches := (len(quotaTargets) + len(commandCodeTargets) + cnQuotaProbeConcurrency - 1) / cnQuotaProbeConcurrency
@@ -235,6 +238,24 @@ func (s *CNProviderBalanceCheckService) collectCommandCodeTargets() []*Account {
 	for i := range accounts {
 		account := &accounts[i]
 		if account.IsActive() && account.commandCodeUsageSupported() {
+			targets = append(targets, account)
+		}
+	}
+	return targets
+}
+
+// collectClineTargets 选出官方主机上激活且可调度的 Cline 按量计费账号（ClinePass 账号
+// 的可用性与积分无关）。
+func (s *CNProviderBalanceCheckService) collectClineTargets() []*Account {
+	accounts, err := s.accountRepo.ListByPlatform(context.Background(), PlatformCline)
+	if err != nil {
+		log.Printf("[CNBalance] list %s accounts failed: %v", PlatformCline, err)
+		return nil
+	}
+	targets := make([]*Account, 0, len(accounts))
+	for i := range accounts {
+		account := &accounts[i]
+		if account.IsActive() && account.Schedulable && account.clineBalanceSupported() {
 			targets = append(targets, account)
 		}
 	}

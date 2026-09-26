@@ -407,6 +407,13 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			return disable
 		}
 	}
+	// Cline 积分、花费上限与 ClinePass 超限同样按文案区分（见 ratelimit_cline.go）。
+	if account.IsCline() && (statusCode == http.StatusBadRequest || statusCode == http.StatusPaymentRequired ||
+		statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests) {
+		if handled, disable := s.handleClineError(ctx, account, statusCode, responseBody, upstreamMsg); handled {
+			return disable
+		}
+	}
 
 	switch statusCode {
 	case 400:
@@ -524,10 +531,10 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			shouldDisable = true
 		}
 	case 402:
-		// 国产供应商 / OpenCode Zen / Command Code：余额（积分）不足是可恢复状态
-		// （充值/检测恢复后由周期任务自动解除），不能走 handleAuthError 永久置
+		// 国产供应商 / OpenCode Zen / Command Code / Cline：余额（积分）不足是可恢复
+		// 状态（充值/检测恢复后由周期任务自动解除），不能走 handleAuthError 永久置
 		// status=error。改为可恢复的临时停调。
-		if account.IsCNProvider() || account.IsOpenCodeZen() || account.IsCommandCode() {
+		if account.IsCNProvider() || account.IsOpenCodeZen() || account.IsCommandCode() || account.IsCline() {
 			s.handleCNProviderInsufficientBalance(ctx, account, upstreamMsg)
 			shouldDisable = true
 			break
