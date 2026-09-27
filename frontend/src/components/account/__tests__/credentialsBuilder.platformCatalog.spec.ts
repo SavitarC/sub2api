@@ -24,6 +24,7 @@ import {
   isMultiProtocolApiKeyPlatform,
   providerAccountModes,
   providerHasModelCatalog,
+  providerModeLabel,
   providerNativeProtocols,
   providerRoutesByModel,
   resolveProviderAccountMode,
@@ -56,7 +57,7 @@ const legacyZenRules = [
 ]
 
 function legacyIsMultiProtocol(platform: string): boolean {
-  return ['kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'command_code'].includes(platform)
+  return ['kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'command_code', 'cline'].includes(platform)
 }
 
 function legacySupportsResponses(platform: string): boolean {
@@ -64,7 +65,7 @@ function legacySupportsResponses(platform: string): boolean {
 }
 
 function legacyHeaderOverride(platform: string, type: string): boolean {
-  if (['anthropic', 'openai', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'command_code'].includes(platform)) {
+  if (['anthropic', 'openai', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'command_code', 'cline'].includes(platform)) {
     return type === 'apikey'
   }
   if (platform === 'grok') return type === 'apikey' || type === 'oauth'
@@ -211,6 +212,34 @@ describe('credentialsBuilder built-in Command Code provider', () => {
     expect(cnBalanceCellVisible('command_code', 'payg')).toBe(true)
     expect(cnQuotaCellVisible('deepseek', 'payg')).toBe(false)
     expect(cnBalanceCellVisible('zhipu', 'payg')).toBe(false)
+  })
+})
+
+describe('credentialsBuilder built-in Cline provider', () => {
+  it('only offers Chat Completions and routes by inbound protocol', () => {
+    expect(isMultiProtocolApiKeyPlatform('cline')).toBe(true)
+    expect(providerRoutesByModel('cline')).toBe(false)
+    // 积分与 ClinePass 共用同一个 Key 与端点，只有一个接入模式（不显示账号类型）。
+    expect(providerAccountModes('cline')).toEqual(['payg'])
+    expect(defaultCNAdaptiveBaseUrls('cline', 'payg')).toEqual({
+      chat_completions: 'https://api.cline.bot/api/v1',
+      anthropic: '',
+      responses: ''
+    })
+    expect(providerNativeProtocols('cline', 'payg')).toEqual(['chat_completions'])
+    expect(defaultProviderProtocolRules('cline', 'payg')).toEqual([])
+  })
+
+  it('shows ClinePass windows and the credit balance', () => {
+    expect(cnQuotaCellVisible('cline', '')).toBe(true)
+    expect(cnBalanceCellVisible('cline', '')).toBe(true)
+  })
+
+  it('labels provider modes', () => {
+    const t = (key: string) => key
+    expect(providerModeLabel('payg', t)).toBe('admin.accounts.cnProviders.accountMode.payg')
+    expect(providerModeLabel('go', t)).toBe('admin.accounts.opencodeGo.accountMode.go')
+    expect(providerModeLabel('standard', t)).toBe('standard')
   })
 })
 

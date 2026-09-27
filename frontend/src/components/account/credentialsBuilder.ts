@@ -301,6 +301,22 @@ export function providerHasModelCatalog(platform: string): boolean {
   return getProviderProfile(platform)?.model_catalog === true
 }
 
+/** 接入模式的展示名；未知模式原样显示。 */
+export function providerModeLabel(mode: string, t: (key: string) => string): string {
+  switch (mode) {
+    case 'payg':
+      return t('admin.accounts.cnProviders.accountMode.payg')
+    case 'coding':
+      return t('admin.accounts.cnProviders.accountMode.coding')
+    case 'zen':
+      return t('admin.accounts.opencodeGo.accountMode.zen')
+    case 'go':
+      return t('admin.accounts.opencodeGo.accountMode.go')
+    default:
+      return mode
+  }
+}
+
 /** 供应商的接入模式，默认模式在前。 */
 export function providerAccountModes(platform: string): string[] {
   return getProviderProfile(platform)?.modes.map(item => item.mode) ?? []
@@ -522,13 +538,13 @@ export function defaultCNAdaptiveBaseUrls(
 
 export function cnQuotaCellVisible(platform: string, accountMode: string): boolean {
   if (platform === 'opencode_go') return accountMode !== 'zen'
-  // Command Code：订阅套餐窗口与积分同源，一次探测同时刷新两者。
-  if (platform === 'command_code') return true
+  // Command Code、Cline：订阅窗口与积分由一次探测同时刷新。
+  if (platform === 'command_code' || platform === 'cline') return true
   return (platform === 'kimi' || platform === 'zhipu' || platform === 'minimax') && accountMode === 'coding'
 }
 
 export function cnBalanceCellVisible(platform: string, accountMode: string): boolean {
-  if (platform === 'command_code') return true
+  if (platform === 'command_code' || platform === 'cline') return true
   return (platform === 'kimi' || platform === 'deepseek') && accountMode !== 'coding'
 }
 
