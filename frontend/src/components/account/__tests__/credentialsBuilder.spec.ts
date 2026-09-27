@@ -22,6 +22,7 @@ import {
   parseHeaderOverridesJson,
   parseOpenCodeGoProtocolRules,
   planTypeDisplayLabel,
+  protocolRuleSet,
   readPlanType,
   serializeHeaderOverrideRows,
   splitHeaderOverridesObject,
@@ -139,6 +140,31 @@ describe('openCodeGo protocol rules', () => {
     ).toEqual([
       { pattern: 'grok-*', protocol: 'responses' },
       { pattern: 'minimax-*', protocol: 'anthropic' }
+    ])
+  })
+
+  it('round-trips protocol sets with the preferred protocol first', () => {
+    const parsed = parseOpenCodeGoProtocolRules([
+      { pattern: 'gpt-*', protocol: 'responses', protocols: ['responses', 'chat_completions', 'adaptive', 'chat_completions'] },
+      { pattern: 'glm-*', protocols: ['anthropic', 'chat_completions'] },
+      { pattern: 'kimi-*', protocol: 'chat_completions', protocols: ['chat_completions'] }
+    ])
+    expect(parsed).toEqual([
+      { pattern: 'gpt-*', protocol: 'responses', extraProtocols: ['chat_completions'] },
+      { pattern: 'glm-*', protocol: 'anthropic', extraProtocols: ['chat_completions'] },
+      { pattern: 'kimi-*', protocol: 'chat_completions' }
+    ])
+    expect(protocolRuleSet(parsed![0])).toEqual(['responses', 'chat_completions'])
+
+    const cloned = cloneOpenCodeGoProtocolRules(parsed!)
+    expect(cloned).toEqual(parsed)
+    expect(cloned[0].extraProtocols).not.toBe(parsed![0].extraProtocols)
+
+    const credentials: Record<string, unknown> = {}
+    applyOpenCodeGoProtocolRules(credentials, [{ pattern: ' GPT-* ', protocol: 'responses', extraProtocols: ['chat_completions', 'responses'] }, ...parsed!.slice(2)], 'create')
+    expect(credentials[OPENCODE_GO_PROTOCOL_RULES_KEY]).toEqual([
+      { pattern: 'gpt-*', protocol: 'responses', protocols: ['responses', 'chat_completions'] },
+      { pattern: 'kimi-*', protocol: 'chat_completions' }
     ])
   })
 

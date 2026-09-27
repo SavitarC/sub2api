@@ -13,6 +13,8 @@ import {
   OPENCODE_GO_BASE_URL,
   OPENCODE_ZEN_ANTHROPIC_BASE_URL,
   OPENCODE_ZEN_BASE_URL,
+  cnBalanceCellVisible,
+  cnQuotaCellVisible,
   cnSupportsNativeResponses,
   defaultCNAdaptiveBaseUrls,
   defaultCNBaseUrl,
@@ -21,13 +23,14 @@ import {
   isHeaderOverrideCapable,
   isMultiProtocolApiKeyPlatform,
   providerAccountModes,
+  providerHasModelCatalog,
   providerNativeProtocols,
   providerRoutesByModel,
   resolveProviderAccountMode,
   type CnApiProtocol
 } from '../credentialsBuilder'
 
-// ===== 改为读取平台清单之前的实现，作为等价基准 =====
+// ===== 改为读取平台清单之前的实现，作为等价基准（补入之后内置登记的 Command Code） =====
 
 const legacyOpenCode = {
   goBase: 'https://opencode.ai/zen/go/v1',
@@ -53,15 +56,15 @@ const legacyZenRules = [
 ]
 
 function legacyIsMultiProtocol(platform: string): boolean {
-  return ['kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'].includes(platform)
+  return ['kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'command_code'].includes(platform)
 }
 
 function legacySupportsResponses(platform: string): boolean {
-  return ['deepseek', 'kimi', 'minimax', 'opencode_go'].includes(platform)
+  return ['deepseek', 'kimi', 'minimax', 'opencode_go', 'command_code'].includes(platform)
 }
 
 function legacyHeaderOverride(platform: string, type: string): boolean {
-  if (['anthropic', 'openai', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'].includes(platform)) {
+  if (['anthropic', 'openai', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'command_code'].includes(platform)) {
     return type === 'apikey'
   }
   if (platform === 'grok') return type === 'apikey' || type === 'oauth'
@@ -185,13 +188,39 @@ describe('credentialsBuilder derives multi-protocol data from the platform catal
   })
 })
 
+describe('credentialsBuilder built-in Command Code provider', () => {
+  it('uses the Command Code endpoints and routes Claude / GPT by model', () => {
+    expect(isMultiProtocolApiKeyPlatform('command_code')).toBe(true)
+    expect(providerRoutesByModel('command_code')).toBe(true)
+    expect(providerAccountModes('command_code')).toEqual(['payg'])
+    expect(defaultCNAdaptiveBaseUrls('command_code', 'payg')).toEqual({
+      chat_completions: 'https://api.commandcode.ai/provider/v1',
+      anthropic: 'https://api.commandcode.ai/provider',
+      responses: 'https://api.commandcode.ai/provider/v1'
+    })
+    expect(defaultProviderProtocolRules('command_code', 'payg')).toEqual([
+      { pattern: 'claude-*', protocol: 'anthropic' },
+      { pattern: 'gpt-*', protocol: 'responses', extraProtocols: ['chat_completions'] }
+    ])
+    expect(providerHasModelCatalog('command_code')).toBe(true)
+    expect(providerHasModelCatalog('opencode_go')).toBe(false)
+  })
+
+  it('shows both the quota windows and the credit balance', () => {
+    expect(cnQuotaCellVisible('command_code', 'payg')).toBe(true)
+    expect(cnBalanceCellVisible('command_code', 'payg')).toBe(true)
+    expect(cnQuotaCellVisible('deepseek', 'payg')).toBe(false)
+    expect(cnBalanceCellVisible('zhipu', 'payg')).toBe(false)
+  })
+})
+
 describe('credentialsBuilder picks up newly registered providers from the catalog', () => {
   const serverCatalog: PlatformCatalog = {
     platforms: [
       ...BUILTIN_PLATFORM_CATALOG.platforms,
       {
-        id: 'command_code',
-        display_name: 'Command Code',
+        id: 'acme_router',
+        display_name: 'Acme Router',
         gateway: 'openai',
         cn_provider: false,
         multi_protocol: {
@@ -201,8 +230,8 @@ describe('credentialsBuilder picks up newly registered providers from the catalo
             {
               mode: 'standard',
               base_urls: {
-                chat_completions: 'https://api.commandcode.ai/provider/v1',
-                anthropic: 'https://api.commandcode.ai/provider'
+                chat_completions: 'https://api.acme-router.example/provider/v1',
+                anthropic: 'https://api.acme-router.example/provider'
               },
               protocol_rules: [
                 { pattern: 'claude-*', protocol: 'anthropic' },
@@ -213,29 +242,29 @@ describe('credentialsBuilder picks up newly registered providers from the catalo
         }
       }
     ],
-    composite_precedence: [...BUILTIN_PLATFORM_CATALOG.composite_precedence, 'command_code']
+    composite_precedence: [...BUILTIN_PLATFORM_CATALOG.composite_precedence, 'acme_router']
   }
 
   it('treats the new provider as a multi-protocol API-key platform', () => {
-    expect(isMultiProtocolApiKeyPlatform('command_code')).toBe(false)
+    expect(isMultiProtocolApiKeyPlatform('acme_router')).toBe(false)
     setPlatformCatalog(serverCatalog)
 
-    expect(isMultiProtocolApiKeyPlatform('command_code')).toBe(true)
-    expect(isHeaderOverrideCapable('command_code', 'apikey')).toBe(true)
-    expect(isHeaderOverrideCapable('command_code', 'oauth')).toBe(false)
-    expect(cnSupportsNativeResponses('command_code')).toBe(false)
-    expect(providerNativeProtocols('command_code')).toEqual(['chat_completions', 'anthropic'])
-    expect(providerRoutesByModel('command_code')).toBe(true)
-    expect(resolveProviderAccountMode('command_code', 'payg')).toBe('standard')
-    expect(defaultCNBaseUrl('command_code', 'standard', 'anthropic')).toBe('https://api.commandcode.ai/provider')
-    expect(defaultCNBaseUrl('command_code', 'standard', 'responses')).toBe('https://api.commandcode.ai/provider/v1')
-    expect(defaultCNAdaptiveBaseUrls('command_code', 'standard')).toEqual({
-      chat_completions: 'https://api.commandcode.ai/provider/v1',
-      anthropic: 'https://api.commandcode.ai/provider',
+    expect(isMultiProtocolApiKeyPlatform('acme_router')).toBe(true)
+    expect(isHeaderOverrideCapable('acme_router', 'apikey')).toBe(true)
+    expect(isHeaderOverrideCapable('acme_router', 'oauth')).toBe(false)
+    expect(cnSupportsNativeResponses('acme_router')).toBe(false)
+    expect(providerNativeProtocols('acme_router')).toEqual(['chat_completions', 'anthropic'])
+    expect(providerRoutesByModel('acme_router')).toBe(true)
+    expect(resolveProviderAccountMode('acme_router', 'payg')).toBe('standard')
+    expect(defaultCNBaseUrl('acme_router', 'standard', 'anthropic')).toBe('https://api.acme-router.example/provider')
+    expect(defaultCNBaseUrl('acme_router', 'standard', 'responses')).toBe('https://api.acme-router.example/provider/v1')
+    expect(defaultCNAdaptiveBaseUrls('acme_router', 'standard')).toEqual({
+      chat_completions: 'https://api.acme-router.example/provider/v1',
+      anthropic: 'https://api.acme-router.example/provider',
       responses: ''
     })
     // 非法协议的规则被丢弃。
-    expect(defaultProviderProtocolRules('command_code', 'standard')).toEqual([
+    expect(defaultProviderProtocolRules('acme_router', 'standard')).toEqual([
       { pattern: 'claude-*', protocol: 'anthropic' }
     ])
   })
