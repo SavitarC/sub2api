@@ -1045,6 +1045,7 @@ var upstreamBillingProbeOfficialAPIDomains = []string{
 	"deepseek.com",
 	"opencode.ai",
 	"typesafe.ai",
+	"commandcode.ai",
 }
 
 func upstreamBillingProbeTargetIsOfficialAPI(baseURL string) bool {

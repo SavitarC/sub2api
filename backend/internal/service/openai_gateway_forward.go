@@ -177,9 +177,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		originalModel = reqModel
 	}
 
-	// 上游协议统一由 resolveUpstreamProtocol 判定。OpenAI API Key 账号只会落到
+	// 上游协议统一由 resolveUpstreamProtocol 判定（按模型分流时带上游模型目录）。OpenAI API Key 账号只会落到
 	// Responses / Chat Completions，上面的归一化对两条路径都生效。
-	switch resolveUpstreamProtocol(account, APIProtocolResponses, upstreamRoutingModel(account, body, "")) {
+	switch s.resolveUpstreamProtocolFor(account, APIProtocolResponses, upstreamRoutingModel(account, body, "")) {
 	case APIProtocolAnthropic:
 		// Responses 客户端 × Anthropic 上游：转成 Anthropic 请求走原生端点。不能落到
 		// raw-CC 分支——其 URL 构造会把 anthropic base 当 CC base 用。
