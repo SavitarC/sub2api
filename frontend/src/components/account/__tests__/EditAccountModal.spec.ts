@@ -60,6 +60,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 import EditAccountModal from '../EditAccountModal.vue'
+import ClineUpstreamRulesEditor from '../ClineUpstreamRulesEditor.vue'
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',
@@ -335,6 +336,37 @@ describe('EditAccountModal', () => {
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it('loads and removes Cline rules while retaining unrelated credentials and the stored key', async () => {
+    const account = buildAccount()
+    account.platform = 'cline'
+    account.credentials = {
+      base_url: 'https://api.cline.bot/api/v1',
+      api_protocol: 'chat_completions',
+      model_mapping: { alias: 'cline-pass/glm-5.3-flash' },
+      cline_upstream_pins: {
+        'cline-pass/glm-5.3-flash': { pipeline: 'direct', upstream: 'z-ai', has: ['vision'] }
+      }
+    }
+    account.credentials_status = { has_api_key: true }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    const editor = wrapper.getComponent(ClineUpstreamRulesEditor)
+    expect(editor.props('rows')).toEqual([{
+      model: 'cline-pass/glm-5.3-flash', mode: 'strict', upstream: 'z-ai', pipeline: 'direct', has: []
+    }])
+    expect(editor.props('connection')).toMatchObject({ account_id: account.id, base_url: 'https://api.cline.bot/api/v1', proxy_id: 0 })
+    expect(editor.props('connection').api_key).toBeUndefined()
+    await editor.get('[data-testid="cline-remove"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials).not.toHaveProperty('cline_upstream_pins')
+    expect(credentials).not.toHaveProperty('api_key')
+    expect(credentials.model_mapping).toEqual({ alias: 'cline-pass/glm-5.3-flash' })
+    expect(credentials.base_url).toBe('https://api.cline.bot/api/v1')
+    wrapper.unmount()
+  })
 
   it('passes existing non-identity mappings to the whitelist selector and preserves them on save', async () => {
     const account = buildAccount()

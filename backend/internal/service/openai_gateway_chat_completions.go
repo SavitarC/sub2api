@@ -143,6 +143,10 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 			if err != nil {
 				return nil, err
 			}
+			chatBody, err = preserveClineRoutingOptions(account, chatBody, body)
+			if err != nil {
+				return nil, err
+			}
 			return s.forwardAsRawChatCompletions(ctx, c, account, chatBody, defaultMappedModel)
 		}
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)

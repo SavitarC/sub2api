@@ -74,6 +74,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 import CreateAccountModal from '../CreateAccountModal.vue'
+import ClineUpstreamRulesEditor from '../ClineUpstreamRulesEditor.vue'
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',
@@ -685,6 +686,29 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(payload?.credentials).not.toHaveProperty('protocol_rules')
     expect(payload?.credentials?.api_base_urls).not.toHaveProperty('responses')
     expect(payload?.credentials?.api_base_urls).not.toHaveProperty('anthropic')
+  })
+
+  it('saves Cline rules from the create editor and rejects an incomplete strict pin', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="platform-button-cline"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('cline')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-cline')
+    const editor = wrapper.getComponent(ClineUpstreamRulesEditor)
+    const rule = { model: 'cline-pass/glm-5.3-flash', mode: 'strict', upstream: '', pipeline: 'direct', has: [] }
+    editor.vm.$emit('update:rows', [rule])
+    await wrapper.vm.$nextTick()
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    expect(createAccountMock).not.toHaveBeenCalled()
+
+    editor.vm.$emit('update:rows', [{ ...rule, upstream: 'z-ai' }])
+    await wrapper.vm.$nextTick()
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials.cline_upstream_pins).toEqual({
+      'cline-pass/glm-5.3-flash': { pipeline: 'direct', upstream: 'z-ai' }
+    })
+    expect(editor.props('connection').api_key).toBe('sk-cline')
+    wrapper.unmount()
   })
 
   it('submits adaptive Kimi protocol endpoints', async () => {

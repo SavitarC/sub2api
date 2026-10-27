@@ -645,17 +645,19 @@ export interface SyncUpstreamPreviewParams {
   platform: string
   type: string
   base_url?: string
-  api_key: string
+  api_key?: string
+  account_id?: number
+  proxy_id?: number
   model_mapping?: Record<string, string>
 }
 
 /**
- * Preview upstream models without a saved account (create-flow)
+ * Preview models with draft credentials; Cline can reuse a saved account's key.
  * @param params - Connection credentials
  * @returns List of model IDs returned by the upstream
  */
-export async function syncUpstreamModelsPreview(params: SyncUpstreamPreviewParams): Promise<SyncUpstreamModelsResult> {
-  const { data } = await apiClient.post<SyncUpstreamModelsResult>('/admin/accounts/models/sync-upstream-preview', params)
+export async function syncUpstreamModelsPreview(params: SyncUpstreamPreviewParams, signal?: AbortSignal): Promise<SyncUpstreamModelsResult> {
+  const { data } = await apiClient.post<SyncUpstreamModelsResult>('/admin/accounts/models/sync-upstream-preview', params, { signal })
   return data
 }
 

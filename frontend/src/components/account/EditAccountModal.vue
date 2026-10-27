@@ -249,6 +249,20 @@
           />
           <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
         </div>
+        <ClineUpstreamRulesEditor
+          v-if="account.platform === 'cline'"
+          :key="account.id"
+          ref="clineRulesEditor"
+          v-model:rows="clineUpstreamRules"
+          :connection="{
+            account_id: account.id,
+            api_key: editApiKey.trim() || undefined,
+            base_url: (editApiProtocol === 'adaptive' ? editAdaptiveBaseUrls.chat_completions : editBaseUrl).trim() || defaultBaseUrl,
+            proxy_id: form.proxy_id ?? 0
+          }"
+          :model-mapping="buildModelRestrictionMapping() || undefined"
+          :discovery-snapshot="account.extra?.cline_upstream_discovery"
+        />
 
         <!-- Model Restriction Section (不适用于 Antigravity) -->
         <div v-if="account.platform !== 'antigravity'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -3269,6 +3283,8 @@ import {
   normalizeExplicitCacheUpstreamMaxTTL
 } from '@/utils/geminiExplicitCache'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
+import ClineUpstreamRulesEditor from '@/components/account/ClineUpstreamRulesEditor.vue'
+import { applyClineUpstreamRules, parseClineUpstreamRules, CLINE_UPSTREAM_PINS_KEY, type ClineUpstreamRule } from '@/components/account/clineUpstreamRules'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
 import {
@@ -3491,6 +3507,8 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+const clineUpstreamRules = ref<ClineUpstreamRule[]>([])
+const clineRulesEditor = ref<InstanceType<typeof ClineUpstreamRulesEditor> | null>(null)
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）account_mode / api_protocol 编辑 ──
 // account_mode 决定额度/余额监控路径，api_protocol 决定转发端点与格式；
@@ -4284,6 +4302,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   if (!newAccount) {
     return
   }
+  clineUpstreamRules.value = newAccount.platform === 'cline'
+    ? parseClineUpstreamRules(newAccount.credentials?.[CLINE_UPSTREAM_PINS_KEY])
+    : []
   // 进入回填窗口：抑制 CN 模式/协议 watcher 联动重置 base_url（见 syncingForm 注释）。
   syncingForm.value = true
   void nextTick(() => {
@@ -5326,6 +5347,7 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
 
 const handleSubmit = async () => {
   if (!props.account) return
+  if (props.account.platform === 'cline' && clineRulesEditor.value?.validate() === false) return
   const accountID = props.account.id
 
   if (form.status !== 'active' && form.status !== 'inactive' && form.status !== 'error') {
@@ -5409,6 +5431,9 @@ const handleSubmit = async () => {
       }
 
       // Handle API key
+      if (props.account.platform === 'cline') {
+        applyClineUpstreamRules(newCredentials, clineUpstreamRules.value)
+      }
       // 后端响应已脱敏：currentCredentials 不会再包含 api_key 原文。
       // 用户填入新值则覆盖；留空时优先看 credentials_status.has_api_key；
       // 若后端尚未升级（无 credentials_status），回退读旧结构 currentCredentials.api_key。

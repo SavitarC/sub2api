@@ -3094,14 +3094,16 @@ func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
 	response.Success(c, catalog)
 }
 
-// SyncUpstreamModelsPreview handles syncing live supported models using provided credentials (no account ID needed).
+// SyncUpstreamModelsPreview also accepts a saved Cline account with draft connection overrides.
 // POST /api/v1/admin/accounts/models/sync-upstream-preview
 func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 	var req struct {
+		AccountID    int64             `json:"account_id"`
+		ProxyID      *int64            `json:"proxy_id"`
 		Platform     string            `json:"platform" binding:"required"`
 		Type         string            `json:"type" binding:"required"`
 		BaseURL      string            `json:"base_url"`
-		APIKey       string            `json:"api_key" binding:"required"`
+		APIKey       string            `json:"api_key"`
 		ModelMapping map[string]string `json:"model_mapping"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -3121,6 +3123,28 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 			"base_url":      req.BaseURL,
 			"model_mapping": modelMapping,
 		},
+	}
+	if req.Platform == service.PlatformCline {
+		if req.Type != service.AccountTypeAPIKey {
+			response.BadRequest(c, "A Cline API key account is required")
+			return
+		}
+		resolved, persist, err := h.resolveClineProbeAccount(c.Request.Context(), clineProbeConnection{
+			AccountID: req.AccountID, APIKey: req.APIKey, BaseURL: req.BaseURL, ProxyID: req.ProxyID,
+		})
+		if response.ErrorFrom(c, err) {
+			return
+		}
+		tempAccount = resolved
+		if !persist {
+			tempAccount.ID = 0
+		}
+		if req.ModelMapping != nil {
+			tempAccount.Credentials["model_mapping"] = modelMapping
+		}
+	} else if strings.TrimSpace(req.APIKey) == "" {
+		response.BadRequest(c, "API key is required")
+		return
 	}
 
 	if h.accountTestService == nil {

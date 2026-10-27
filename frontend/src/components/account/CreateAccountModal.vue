@@ -1561,6 +1561,17 @@
           />
           <p v-if="apiKeyHint" class="input-hint">{{ apiKeyHint }}</p>
         </div>
+        <ClineUpstreamRulesEditor
+          v-if="form.platform === 'cline'"
+          ref="clineRulesEditor"
+          v-model:rows="clineUpstreamRules"
+          :connection="{
+            api_key: apiKeyValue.trim() || undefined,
+            base_url: (apiProtocol === 'adaptive' ? adaptiveBaseUrls.chat_completions : apiKeyBaseUrl).trim() || undefined,
+            proxy_id: form.proxy_id ?? 0
+          }"
+          :model-mapping="buildModelMappingObject(modelRestrictionMode, allowedModels, modelMappings) || undefined"
+        />
 
         <!-- 上游倍率自动探测：全部 API-key 平台可用（所在区块已限定 apikey 类型） -->
         <div
@@ -4166,6 +4177,8 @@ import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import { applyExplicitCacheUpstreamCredentials, isOfficialGeminiBaseUrl } from '@/utils/geminiExplicitCache'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
+import ClineUpstreamRulesEditor from '@/components/account/ClineUpstreamRulesEditor.vue'
+import { applyClineUpstreamRules, type ClineUpstreamRule } from '@/components/account/clineUpstreamRules'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
 import {
@@ -4395,6 +4408,8 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
+const clineUpstreamRules = ref<ClineUpstreamRule[]>([])
+const clineRulesEditor = ref<InstanceType<typeof ClineUpstreamRulesEditor> | null>(null)
 const upstreamBillingAutoProbeEnabled = ref(true)
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）账号类型、API 协议与端点 ──
@@ -5609,6 +5624,7 @@ const submitCreateAccount = async (payload: CreateAccountRequest) => {
 
 // Methods
 const resetForm = () => {
+  clineUpstreamRules.value = []
   step.value = 1
   form.name = ''
   form.notes = ''
@@ -5939,6 +5955,7 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
+  if (form.platform === 'cline' && clineRulesEditor.value?.validate() === false) return
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
     if (!isGrokSSOInputMethod.value && !form.name.trim()) {
@@ -6162,6 +6179,9 @@ const handleSubmit = async () => {
   }
 
   // Add model mapping if configured（OpenAI 开启自动透传时不应用）
+  if (form.platform === 'cline') {
+    applyClineUpstreamRules(credentials, clineUpstreamRules.value)
+  }
   if (!isOpenAIModelRestrictionDisabled.value) {
     const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
     if (modelMapping) {
