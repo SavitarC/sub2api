@@ -37,9 +37,8 @@ func ClaudeCodeSessionIDFromHeader(c *gin.Context) string {
 // protocol-agnostic and shared by every gateway handler so all supported protocols
 // record session_id through one seam. Returns "" when no valid identifier is present.
 //
-// This value feeds only usage_logs.session_id persistence. It does NOT affect sticky
-// routing, account selection, request_id semantics, or upstream prompt caching, which
-// keep their own (intentionally broader) session-signal resolution.
+// Usage logging and composite provider ordering share this explicit session signal.
+// Account-level sticky routing and upstream prompt caching keep their broader resolution.
 func ExtractClientSessionID(c *gin.Context) string {
 	if c == nil || c.Request == nil {
 		return ""

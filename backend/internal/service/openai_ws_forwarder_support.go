@@ -532,6 +532,10 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	if s == nil {
 		return 0, nil, "", nil
 	}
+	// Composite continuation is already pinned; ordinary admission keeps that durable binding during cooldowns.
+	if _, pinned := CompositeResponseAccountFromContext(ctx); pinned {
+		return 0, nil, "", nil
+	}
 	responseID := strings.TrimSpace(previousResponseID)
 	if responseID == "" {
 		return 0, nil, "", nil

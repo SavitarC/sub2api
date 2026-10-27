@@ -1195,6 +1195,7 @@ export default {
         matchType: 'Match',
         endpoint: 'Endpoint',
         targetPlatform: 'Target Platform',
+        candidatePlatforms: 'Candidate platforms (automatic routing and failover)',
         upstreamModel: 'Upstream Model',
         upstreamModelHint: 'Leave empty to pass the original requested model through: under prefix match each matched model forwards verbatim (e.g. deepseek-v4-flash and deepseek-v4-pro each forwarded as-is); set a value to forward every matched request to that fixed model.',
         notes: 'Notes',
@@ -1227,6 +1228,7 @@ export default {
         },
         sources: {
           route: 'Route',
+          accountModel: 'Account model mappings',
           detector: 'Detector'
         }
       },

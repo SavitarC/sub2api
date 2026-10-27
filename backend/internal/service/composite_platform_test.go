@@ -83,7 +83,7 @@ func TestResolveCompositeModelOwnershipRequiresNonEmptyExactMappings(t *testing.
 	require.Equal(t, CompositeModelOwnership{TargetPlatform: PlatformGrok, Matched: true}, ownership)
 }
 
-func TestResolveCompositeModelOwnershipAllowsSamePlatformAndRejectsCrossPlatformAliases(t *testing.T) {
+func TestResolveCompositeModelOwnershipReturnsCrossPlatformCandidates(t *testing.T) {
 	groupID := int64(7)
 	repo := &compositeOwnershipAccountRepo{
 		accounts: []Account{
@@ -100,7 +100,9 @@ func TestResolveCompositeModelOwnershipAllowsSamePlatformAndRejectsCrossPlatform
 
 	ambiguous, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "ambiguous")
 	require.NoError(t, err)
-	require.Equal(t, CompositeModelOwnership{Ambiguous: true}, ambiguous)
+	require.True(t, ambiguous.Ambiguous)
+	require.Len(t, ambiguous.Candidates, 2)
+	require.ElementsMatch(t, []string{PlatformOpenAI, PlatformDeepseek}, []string{ambiguous.Candidates[0].TargetPlatform, ambiguous.Candidates[1].TargetPlatform})
 }
 
 // Scenario: 只有 OpenAI 网关族的 OAuth 声明方会被标记（API Key 上游可能兼容多协议，
@@ -121,15 +123,18 @@ func TestResolveCompositeModelOwnershipFlagsOpenAIGatewayOAuthClaimants(t *testi
 
 	withOAuth, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "gpt-6-astra")
 	require.NoError(t, err)
-	require.Equal(t, CompositeModelOwnership{Ambiguous: true, OpenAIGatewayOAuthClaimed: true}, withOAuth)
+	require.True(t, withOAuth.OpenAIGatewayOAuthClaimed)
+	require.Len(t, withOAuth.Candidates, 2)
 
 	apiKeyOnly, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "apikey-only")
 	require.NoError(t, err)
-	require.Equal(t, CompositeModelOwnership{Ambiguous: true}, apiKeyOnly)
+	require.False(t, apiKeyOnly.OpenAIGatewayOAuthClaimed)
+	require.Len(t, apiKeyOnly.Candidates, 2)
 
 	anthropicFamily, err := svc.resolveCompositeModelOwnership(context.Background(), groupID, "claude-opus-4-8")
 	require.NoError(t, err)
-	require.Equal(t, CompositeModelOwnership{Ambiguous: true}, anthropicFamily)
+	require.False(t, anthropicFamily.OpenAIGatewayOAuthClaimed)
+	require.Len(t, anthropicFamily.Candidates, 2)
 }
 
 func TestNewGatewayServiceWiresCompositeModelOwnershipResolver(t *testing.T) {

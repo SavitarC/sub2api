@@ -1192,6 +1192,7 @@ export default {
         matchType: '匹配方式',
         endpoint: '端点',
         targetPlatform: '目标平台',
+        candidatePlatforms: '候选平台（自动调度与故障切换）',
         upstreamModel: '上游模型',
         upstreamModelHint: '留空表示透传原始请求模型：前缀匹配下每个命中模型各自原样转发（如 deepseek-v4-flash、deepseek-v4-pro 分别转发）；填写则所有命中请求都固定转发该模型。',
         notes: '备注',
@@ -1224,6 +1225,7 @@ export default {
         },
         sources: {
           route: '路由',
+          accountModel: '账号模型映射',
           detector: '内置识别'
         }
       },

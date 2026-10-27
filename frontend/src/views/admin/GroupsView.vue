@@ -4236,7 +4236,11 @@
                   v-if="compositePreviewDecision.matched"
                   class="space-y-1 text-gray-700 dark:text-gray-300"
                 >
-                  <div>
+                  <div v-if="compositePreviewDecision.candidates?.length" data-testid="composite-route-candidates">
+                    {{ t("admin.groups.compositeRoutes.candidatePlatforms") }}:
+                    {{ compositePreviewDecision.candidates.map(candidate => formatCompositePlatform(candidate.target_platform)).join(" / ") }}
+                  </div>
+                  <div v-else>
                     {{ t("admin.groups.compositeRoutes.targetPlatform") }}:
                     {{
                       formatCompositePlatform(
@@ -6516,6 +6520,7 @@ const formatCompositePlatform = (platform: string) => {
 
 const compositeRouteSourceLabel = (source: string) => {
   if (source === "route") return t("admin.groups.compositeRoutes.sources.route");
+  if (source === "account_model") return t("admin.groups.compositeRoutes.sources.accountModel");
   if (source === "detector") {
     return t("admin.groups.compositeRoutes.sources.detector");
   }

@@ -1543,6 +1543,7 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 		ownership.Matched = true
 	} else if len(platforms) > 1 {
 		ownership.Ambiguous = true
+		ownership.Candidates = compositeModelCandidates(accounts, model)
 	}
 
 	if s.modelsListCache != nil {

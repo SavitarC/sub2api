@@ -36,6 +36,7 @@ func WithCompositeRouteDecision(ctx context.Context, decision CompositeRouteDeci
 	if ctx == nil || !decision.Matched {
 		return ctx
 	}
+	ctx = context.WithValue(ctx, compositeRouteDecisionKey{}, decision)
 	ctx = WithResolvedTargetPlatform(ctx, decision.TargetPlatform)
 	if model := strings.TrimSpace(decision.UpstreamModel); model != "" {
 		ctx = context.WithValue(ctx, ctxkey.ResolvedUpstreamModel, model)
@@ -179,6 +180,10 @@ func (s *GatewayService) resolveCompositeRouteDecision(ctx context.Context, grou
 		return CompositeRouteDecision{}, false, nil
 	}
 	if platform, ok := ResolvedTargetPlatformFromContext(ctx); ok {
+		if decision, present := CompositeRouteDecisionFromContext(ctx); present {
+			decision.TargetPlatform = platform
+			return decision, decision.Matched, nil
+		}
 		upstreamModel := requestedModel
 		if resolvedModel, modelOK := ResolvedUpstreamModelFromContext(ctx); modelOK {
 			upstreamModel = resolvedModel

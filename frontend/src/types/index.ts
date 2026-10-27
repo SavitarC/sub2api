@@ -741,6 +741,11 @@ export interface CompositeRouteDecision {
   endpoint: CompositeRouteEndpoint
   route?: CompositeModelRoute
   reason?: string
+  candidates?: {
+    target_platform: Exclude<GroupPlatform, 'composite'>
+    priority: number
+    supported_endpoints?: CompositeRouteEndpoint[]
+  }[]
 }
 
 export interface ApiKey {

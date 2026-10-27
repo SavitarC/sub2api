@@ -622,6 +622,34 @@ func TestBuildSchedulerMetadataAccount_KeepsSparkShadowRoutingIdentity(t *testin
 	require.Nil(t, got.Credentials["access_token"])
 }
 
+func TestBuildSchedulerMetadataAccountKeepsCompositeEndpointCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		name, protocol string
+		rules          bool
+		wantGemini     bool
+	}{
+		{"native_gemini", service.APIProtocolAdaptive, false, true},
+		{"pinned_chat", service.APIProtocolChatCompletions, false, false},
+		{"explicit_rules", service.APIProtocolAdaptive, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := service.Account{Platform: service.PlatformOpenCodeGo, Type: service.AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"account_mode": service.AccountModeZen, "api_protocol": tc.protocol,
+					"model_mapping":       map[string]any{"shared-model": "gemini-2.5-flash"},
+					"openai_capabilities": map[string]any{"chat_completions": false},
+				},
+			}
+			if tc.rules {
+				account.Credentials["protocol_rules"] = []any{}
+			}
+			projected := buildSchedulerMetadataAccount(account)
+			require.Equal(t, tc.wantGemini, projected.UsesGeminiUpstream("gemini-2.5-flash"))
+			require.False(t, projected.SupportsOpenAIEndpointCapability(service.OpenAIEndpointCapabilityChatCompletions))
+		})
+	}
+}
+
 func TestSchedulerCacheBucketRetirementFencesWritersAndReopen(t *testing.T) {
 	ctx := context.Background()
 	cache, mr := newSchedulerCacheUnitWithRedis(t)

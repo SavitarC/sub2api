@@ -546,10 +546,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	}
 
 	originalModel := req.Model
-	mappedModel := req.Model
-	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
-		mappedModel = account.GetMappedModel(req.Model)
-	}
+	mappedModel := geminiForwardModel(ctx, account, req.Model)
 
 	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(body)
 	if err != nil {
@@ -579,34 +576,11 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	switch account.Type {
 	case AccountTypeAPIKey:
 		buildReq = func(ctx context.Context) (*http.Request, string, error) {
-			apiKey := account.GetCredential("api_key")
-			if strings.TrimSpace(apiKey) == "" {
-				return nil, "", errors.New("gemini api_key not configured")
-			}
-
-			baseURL := account.GetGeminiBaseURL(geminicli.AIStudioBaseURL)
-			normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
-			if err != nil {
-				return nil, "", err
-			}
-
 			action := "generateContent"
 			if req.Stream {
 				action = "streamGenerateContent"
 			}
-			fullURL, err := buildGeminiAIStudioModelActionURL(normalizedBaseURL, mappedModel, action, req.Stream)
-			if err != nil {
-				return nil, "", err
-			}
-
-			restGeminiReq := normalizeGeminiRequestForAIStudio(geminiReq)
-			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(restGeminiReq))
-			if err != nil {
-				return nil, "", err
-			}
-			upstreamReq.Header.Set("Content-Type", "application/json")
-			upstreamReq.Header.Set("x-goog-api-key", apiKey)
-			return upstreamReq, "x-request-id", nil
+			return s.buildAPIKeyModelRequest(ctx, account, mappedModel, action, req.Stream, normalizeGeminiRequestForAIStudio(geminiReq))
 		}
 		requestIDHeader = "x-request-id"
 
@@ -1120,10 +1094,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	// `thoughtSignature` to avoid frequent INVALID_ARGUMENT 400s.
 	body = ensureGeminiFunctionCallThoughtSignatures(body)
 
-	mappedModel := originalModel
-	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
-		mappedModel = account.GetMappedModel(originalModel)
-	}
+	mappedModel := geminiForwardModel(ctx, account, originalModel)
 	if action != "countTokens" && geminiImageGenerationDenied(c, body, originalModel, mappedModel) {
 		return nil, s.writeGoogleError(c, http.StatusBadRequest, ImageGenerationPermissionMessage())
 	}
@@ -1148,29 +1119,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	switch account.Type {
 	case AccountTypeAPIKey:
 		buildReq = func(ctx context.Context) (*http.Request, string, error) {
-			apiKey := account.GetCredential("api_key")
-			if strings.TrimSpace(apiKey) == "" {
-				return nil, "", errors.New("gemini api_key not configured")
-			}
-
-			baseURL := account.GetGeminiBaseURL(geminicli.AIStudioBaseURL)
-			normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
-			if err != nil {
-				return nil, "", err
-			}
-
-			fullURL, err := buildGeminiAIStudioModelActionURL(normalizedBaseURL, mappedModel, upstreamAction, useUpstreamStream)
-			if err != nil {
-				return nil, "", err
-			}
-
-			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(body))
-			if err != nil {
-				return nil, "", err
-			}
-			upstreamReq.Header.Set("Content-Type", "application/json")
-			upstreamReq.Header.Set("x-goog-api-key", apiKey)
-			return upstreamReq, "x-request-id", nil
+			return s.buildAPIKeyModelRequest(ctx, account, mappedModel, upstreamAction, useUpstreamStream, body)
 		}
 		requestIDHeader = "x-request-id"
 
@@ -1885,7 +1834,7 @@ func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, acc
 
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
 		c,
-		PlatformGemini,
+		geminiAccountPlatform(account),
 		upstreamStatus,
 		body,
 		http.StatusBadGateway,
@@ -3121,6 +3070,12 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 	if !account.ShouldHandleErrorCode(statusCode) {
 		return
 	}
+	if account.IsOpenCodeGo() {
+		if s.rateLimitService != nil {
+			s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, headers, body)
+		}
+		return
+	}
 	if s.rateLimitService != nil && (statusCode == 401 || statusCode == 403 || statusCode == 529) {
 		s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, headers, body)
 		return
@@ -3438,6 +3393,30 @@ func convertClaudeMessagesToGeminiGenerateContent(body []byte) ([]byte, error) {
 
 	if tools := convertClaudeToolsToGeminiTools(req["tools"]); tools != nil {
 		out["tools"] = tools
+	}
+	if choice, ok := req["tool_choice"].(map[string]any); ok {
+		if disabled, _ := choice["disable_parallel_tool_use"].(bool); disabled {
+			return nil, errors.New("disable_parallel_tool_use is not supported by the Gemini adapter")
+		}
+		config := map[string]any{}
+		switch choice["type"] {
+		case "auto":
+			config["mode"] = "AUTO"
+		case "any":
+			config["mode"] = "ANY"
+		case "none":
+			config["mode"] = "NONE"
+		case "tool":
+			name, _ := choice["name"].(string)
+			if strings.TrimSpace(name) == "" {
+				return nil, errors.New("tool_choice.name is required")
+			}
+			config["mode"] = "ANY"
+			config["allowedFunctionNames"] = []string{name}
+		default:
+			return nil, errors.New("unsupported Gemini tool_choice")
+		}
+		out["toolConfig"] = map[string]any{"functionCallingConfig": config}
 	}
 
 	generationConfig := convertClaudeGenerationConfig(req)

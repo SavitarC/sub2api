@@ -127,6 +127,9 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	// ShouldUseResponsesAPI：Anthropic 协议账号经 probe 落标
 	// openai_responses_supported=false，否则会命中 CC 直转。
 	routingModel := upstreamRoutingModel(account, body, defaultMappedModel)
+	if account.UsesGeminiUpstream(routingModel) {
+		return s.forwardGeminiCompat(ctx, c, account, body, routingModel, inbound)
+	}
 	if account.IsOpenCodeGo() && IsOpenCodeUnsupportedModel(routingModel) {
 		return nil, writeOpenCodeUnsupportedModelError(c, false, routingModel)
 	}

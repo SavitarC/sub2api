@@ -30,7 +30,7 @@ func TestForwardOpenCodeUnsupportedModels_ChatCompletionsReturns400(t *testing.T
 		cfg: &config.Config{},
 	}
 
-	for _, model := range []string{"gemini-3.8-flash", "jev-1.13", "opencode/gemini-3.7-flash", "opencode-go/jev-1.13-free"} {
+	for _, model := range []string{"jev-1.13", "opencode-go/jev-1.13-free"} {
 		rec := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(rec)
 		body := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hello"}]}`)
@@ -68,7 +68,7 @@ func TestForwardOpenCodeUnsupportedModels_ResponsesReturns400(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	body := []byte(`{"model":"gemini-3.8-flash","input":[{"role":"user","content":"hello"}]}`)
+	body := []byte(`{"model":"jev-1.13","input":[{"role":"user","content":"hello"}]}`)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 
 	result, err := svc.Forward(context.Background(), c, account, body)
@@ -101,7 +101,7 @@ func TestForwardOpenCodeUnsupportedModels_MessagesReturns400(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	body := []byte(`{"model":"gemini-3.8-flash","messages":[{"role":"user","content":"hello"}]}`)
+	body := []byte(`{"model":"jev-1.13","messages":[{"role":"user","content":"hello"}]}`)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 
 	result, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")

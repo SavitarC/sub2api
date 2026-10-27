@@ -21,6 +21,10 @@ var geminiAIStudioActions = map[string]struct{}{
 // 字段，之后可能再经渠道映射），因此必须先过路径片段护栏才能拼进 path，
 // 见 upstream_path_guard.go。新增 AI Studio 端点请一律走本函数。
 func buildGeminiAIStudioModelActionURL(baseURL, model, action string, stream bool) (string, error) {
+	return buildGeminiModelActionURL(baseURL, "/v1beta/models/", model, action, stream)
+}
+
+func buildGeminiModelActionURL(baseURL, modelPath, model, action string, stream bool) (string, error) {
 	trimmedBase := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if trimmedBase == "" {
 		return "", errors.New("gemini base url is required")
@@ -37,7 +41,7 @@ func buildGeminiAIStudioModelActionURL(baseURL, model, action string, stream boo
 		return "", fmt.Errorf("unsupported gemini action: %s", trimmedAction)
 	}
 
-	fullURL := fmt.Sprintf("%s/v1beta/models/%s:%s", trimmedBase, trimmedModel, trimmedAction)
+	fullURL := fmt.Sprintf("%s%s%s:%s", trimmedBase, modelPath, trimmedModel, trimmedAction)
 	if stream {
 		fullURL += "?alt=sse"
 	}

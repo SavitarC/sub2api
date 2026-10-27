@@ -39,3 +39,17 @@ func hasDuplicateJSONObjectKeys(object gjson.Result) bool {
 	})
 	return duplicate
 }
+
+func requestJSONUnambiguous(value gjson.Result) bool {
+	if value.IsObject() && hasDuplicateJSONObjectKeys(value) {
+		return false
+	}
+	valid := true
+	if value.IsObject() || value.IsArray() {
+		value.ForEach(func(_, child gjson.Result) bool {
+			valid = requestJSONUnambiguous(child)
+			return valid
+		})
+	}
+	return valid
+}

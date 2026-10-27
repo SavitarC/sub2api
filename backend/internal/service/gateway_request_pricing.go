@@ -18,6 +18,9 @@ func WithGatewayTokenRequestPricing(ctx context.Context) (context.Context, time.
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if pricingAt, ok := gatewayTokenRequestPricingAtFromContext(ctx); ok {
+		return ctx, pricingAt
+	}
 	pricingAt := timezone.Now()
 	ctx = context.WithValue(ctx, gatewayTokenRequestPricingAtCtxKey{}, pricingAt)
 	// 调度过程中可能因 fallback/composite 路由覆盖 ctxkey.Group；计费 D 仍必须

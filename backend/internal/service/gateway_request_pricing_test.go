@@ -17,4 +17,7 @@ func TestWithGatewayTokenRequestPricingMarksOnlyExplicitTokenRequests(t *testing
 	require.Equal(t, pricingAt, got)
 	require.Equal(t, pricingAt, GatewayTokenRequestPricingAtFromContext(ctx))
 	require.True(t, GatewayTokenRequestPricingAtFromContext(context.Background()).IsZero())
+	retryCtx, retryPricingAt := WithGatewayTokenRequestPricing(ctx)
+	require.Equal(t, pricingAt, retryPricingAt)
+	require.Same(t, ctx, retryCtx)
 }

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 )
 
 const (
+	CompositeRouteReasonUnsupportedEndpoint = "no model provider supports this endpoint"
 	// CompositeRouteReasonAmbiguous marks a model whose explicit account
 	// mappings span several provider platforms.
 	CompositeRouteReasonAmbiguous = "model is exposed by multiple provider platforms"
@@ -138,6 +140,23 @@ func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, mod
 			if _, detectable := DetectModelPlatform(model); !detectable {
 				return decision, fmt.Errorf("resolve account model ownership: %w", err)
 			}
+		} else if len(ownership.Candidates) > 0 {
+			candidates := make([]CompositeRouteCandidate, 0, len(ownership.Candidates))
+			for _, candidate := range ownership.Candidates {
+				if endpoint == CompositeRouteEndpointAny || slices.Contains(candidate.SupportedEndpoints, endpoint) {
+					candidates = append(candidates, candidate)
+				}
+			}
+			if len(candidates) == 0 {
+				decision.Reason = CompositeRouteReasonUnsupportedEndpoint
+				return decision, nil
+			}
+			decision.Matched = true
+			decision.Source = CompositeRouteSourceAccount
+			decision.TargetPlatform = candidates[0].TargetPlatform
+			decision.UpstreamModel = model
+			decision.Candidates = candidates
+			return decision, nil
 		} else if ownership.Ambiguous {
 			decision.Reason = CompositeRouteReasonAmbiguous
 			// 未解析的请求由下游 handler 按模型名前缀兜底选平台；只有兜底落在

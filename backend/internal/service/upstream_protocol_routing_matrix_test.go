@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -192,6 +193,7 @@ type routingUpstreamRequest struct {
 	URL              string `json:"url"`
 	Authorization    string `json:"authorization,omitempty"`
 	APIKey           string `json:"api_key,omitempty"`
+	GoogleAPIKey     string `json:"google_api_key,omitempty"`
 	AnthropicVersion string `json:"anthropic_version,omitempty"`
 	BodyKind         string `json:"body_kind"`
 	Model            string `json:"model"`
@@ -215,6 +217,16 @@ func (o routingObservation) String() string {
 func observeRouting(tc routingMatrixCase) (obs routingObservation) {
 	upstream := &httpUpstreamRecorder{err: errors.New("stop after capture")}
 	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	geminiUpstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK, Header: http.Header{},
+		Body: io.NopCloser(strings.NewReader(`{"modelVersion":"gemini-3.8-flash","candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1}}`)),
+	}}
+	// The pinned-main recorder predates this setter; keep that capture reproducible.
+	if setter, ok := any(svc).(interface {
+		SetGeminiCompatService(*GeminiMessagesCompatService)
+	}); ok {
+		setter.SetGeminiCompatService(&GeminiMessagesCompatService{cfg: svc.cfg, httpUpstream: geminiUpstream})
+	}
 	body := tc.body()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -224,18 +236,23 @@ func observeRouting(tc routingMatrixCase) (obs routingObservation) {
 		if r := recover(); r != nil {
 			obs.Panic = fmt.Sprint(r)
 		}
-		for i, req := range upstream.requests {
+		requests := append(upstream.requests, geminiUpstream.requests...)
+		bodies := append(upstream.bodies, geminiUpstream.bodies...)
+		for i, req := range requests {
 			kind := "other"
 			switch {
-			case gjson.GetBytes(upstream.bodies[i], "messages").Exists():
+			case gjson.GetBytes(bodies[i], "messages").Exists():
 				kind = "messages"
-			case gjson.GetBytes(upstream.bodies[i], "input").Exists():
+			case gjson.GetBytes(bodies[i], "input").Exists():
 				kind = "input"
+			case gjson.GetBytes(bodies[i], "contents").Exists():
+				kind = "contents"
 			}
 			obs.Requests = append(obs.Requests, routingUpstreamRequest{
 				URL: req.URL.String(), Authorization: req.Header.Get("Authorization"),
 				APIKey: req.Header.Get("X-Api-Key"), AnthropicVersion: req.Header.Get("Anthropic-Version"),
-				BodyKind: kind, Model: gjson.GetBytes(upstream.bodies[i], "model").String(),
+				GoogleAPIKey: req.Header.Get("X-Goog-Api-Key"),
+				BodyKind:     kind, Model: gjson.GetBytes(bodies[i], "model").String(),
 			})
 		}
 		obs.Status = c.Writer.Status()
@@ -310,6 +327,38 @@ func matchesKnownZhipuNonAPIKeyDifference(tc routingMatrixCase, want, got routin
 		reflect.DeepEqual(got, routingObservation{Error: "account 801 missing api_key", Status: http.StatusOK})
 }
 
+// Native Gemini forwarding replaces precisely the Zen/API-Key default-protocol
+// rejection. Explicit protocol rules, other account modes/types and Jev retain main's behavior.
+func matchesKnownOpenCodeGeminiDifference(tc routingMatrixCase, want, got routingObservation) bool {
+	if tc.platform != PlatformOpenCodeGo || tc.mode != AccountModeZen || tc.accountType != AccountTypeAPIKey || tc.rules ||
+		(tc.apiProtocol != "" && tc.apiProtocol != APIProtocolAdaptive && tc.apiProtocol != "invalid") ||
+		(tc.model != "gemini-3.8-flash" && tc.model != "mapped-unsupported") {
+		return false
+	}
+	old := routingObservation{
+		Error: "opencode unsupported model: gemini-3.8-flash", Status: http.StatusBadRequest,
+		ClientErrorType: "invalid_request_error", ClientErrorCode: "model_not_supported",
+		ClientErrorMessage: "Model 'gemini-3.8-flash' is not supported on OpenCode standard gateway (gemini models require Google SDK endpoint, jev models require System One endpoint)",
+	}
+	if tc.ingress.name == "messages" {
+		old.ClientErrorCode = ""
+	}
+	base := "https://opencode.ai/inference/google/v1beta"
+	switch tc.addresses {
+	case "base":
+		base = "http://base.example"
+	case "split", "both":
+		base = "http://cc.example"
+	}
+	current := routingObservation{
+		Status: http.StatusOK,
+		Requests: []routingUpstreamRequest{{
+			URL: base + "/models/gemini-3.8-flash:generateContent", GoogleAPIKey: "sk-test", BodyKind: "contents",
+		}},
+	}
+	return reflect.DeepEqual(want, old) && reflect.DeepEqual(got, current)
+}
+
 func TestUpstreamProtocolRoutingMatrixMatchesMainGolden(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	data, err := os.ReadFile(routingMatrixGoldenPath)
@@ -325,6 +374,7 @@ func TestUpstreamProtocolRoutingMatrixMatchesMainGolden(t *testing.T) {
 	var differences []string
 	mismatched := 0
 	knownDifferences := 0
+	geminiDifferences := 0
 	for i, tc := range cases {
 		index := golden.Results[i]
 		require.GreaterOrEqual(t, index, 0)
@@ -338,6 +388,10 @@ func TestUpstreamProtocolRoutingMatrixMatchesMainGolden(t *testing.T) {
 			knownDifferences++
 			continue
 		}
+		if matchesKnownOpenCodeGeminiDifference(tc, want, got) {
+			geminiDifferences++
+			continue
+		}
 		mismatched++
 		if len(differences) < 12 {
 			differences = append(differences, fmt.Sprintf("%s\nmain: %s\ncurrent: %s", tc.key(), want, got))
@@ -347,4 +401,6 @@ func TestUpstreamProtocolRoutingMatrixMatchesMainGolden(t *testing.T) {
 	// 2 account types × 4 modes × 3 probe states × 4 address configurations ×
 	// 2 model spellings. A disappeared or expanded exception requires review.
 	require.Equal(t, 192, knownDifferences, "unexpected change to the declared Zhipu non-API-Key difference")
+	// 3 default/adaptive spellings × 2 probe states × 4 addresses × 4 ingresses × 2 model IDs.
+	require.Equal(t, 192, geminiDifferences, "unexpected change to the declared OpenCode Zen Gemini support")
 }

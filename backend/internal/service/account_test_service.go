@@ -444,6 +444,9 @@ func (s *AccountTestService) testModelRoutedAccountConnection(c *gin.Context, ac
 		testModelID = openai.DefaultTestModel
 	}
 	testModelID = account.GetMappedModel(testModelID)
+	if account.UsesGeminiUpstream(testModelID) {
+		return s.testGeminiAccountConnection(c, account, testModelID, prompt)
+	}
 	if account.IsOpenCodeGo() && IsOpenCodeUnsupportedModel(testModelID) {
 		return fmt.Errorf("model %q is not supported on OpenCode standard gateway (gemini models require Google SDK endpoint, jev models require System One endpoint)", testModelID)
 	}
@@ -2523,6 +2526,11 @@ func antigravityConnectionTestModel(modelID string) string {
 
 // buildGeminiAPIKeyRequest builds request for Gemini API Key accounts
 func (s *AccountTestService) buildGeminiAPIKeyRequest(ctx context.Context, account *Account, modelID string, payload []byte) (*http.Request, error) {
+	if account.UsesGeminiUpstream(modelID) {
+		compat := GeminiMessagesCompatService{cfg: s.cfg}
+		request, _, err := compat.buildAPIKeyModelRequest(ctx, account, modelID, "streamGenerateContent", true, payload)
+		return request, err
+	}
 	apiKey := account.GetCredential("api_key")
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, fmt.Errorf("no API key available")
